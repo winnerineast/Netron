@@ -1,0 +1,83 @@
+#!/bin/bash
+
+set -e
+
+root=$(cd $(dirname ${0})/..; pwd)
+build=${root}/build
+test=${root}/test
+third_party=${root}/third_party
+tools=${root}/tools
+
+if [ $(which python3) ]; then
+    python="python3"
+else
+    python="python"
+fi
+
+identifier=keras
+virtualenv=${third_party}/virtualenv/${identifier}
+
+bold() {
+    echo "$(tty -s && tput bold)$1$(tty -s && tput sgr0)" 
+}
+
+git_sync() {
+    mkdir -p "${third_party}"
+    if [ -d "${third_party}/${1}" ]; then
+        git -C "${third_party}/${1}" fetch --quiet -p
+        git -C "${third_party}/${1}" reset --quiet --hard origin/master
+    else
+        git -C "${third_party}" clone --quiet --recursive ${2}
+    fi
+    git -C "${third_party}" submodule update --quiet --init
+}
+
+clean() {
+    bold "keras clean"
+    rm -rf ${virtualenv}
+    rm -rf ${third_party}/${identifier}
+}
+
+sync() {
+    bold "keras sync"
+    git_sync keras https://github.com/keras-team/keras.git
+}
+
+install() {
+    bold "keras install"
+    [ -n "$(python3 -m pip list --format columns --disable-pip-version-check | grep -w virtualenv)" ] || ${python} -m pip install --force-reinstall --user --quiet virtualenv
+    [ -d "${virtualenv}" ] || virtualenv --quiet -p ${python} ${virtualenv}
+    source ${virtualenv}/bin/activate
+    ${python} -m pip install --quiet tensorflow
+    ${python} -m pip install --quiet ${third_party}/${identifier}
+    deactivate
+}
+
+metadata() {
+    bold "keras metadata"
+    source ${virtualenv}/bin/activate
+    pushd ${tools} > /dev/null
+    ${python} keras-script.py metadata
+    popd > /dev/null
+    deactivate
+}
+
+zoo() {
+    bold "keras zoo"
+    source ${virtualenv}/bin/activate
+    pushd ${tools} > /dev/null
+    ${python} keras-script.py zoo
+    popd > /dev/null
+    deactivate
+}
+
+while [ "$#" != 0 ]; do
+    command="$1" && shift
+    case "${command}" in
+        "clean") clean;;
+        "sync") sync;;
+        "install") install;;
+        "metadata") metadata;;
+        "zoo") zoo;;
+    esac
+done

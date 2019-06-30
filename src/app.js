@@ -1,4 +1,5 @@
-/*jshint esversion: 6 */
+/* jshint esversion: 6 */
+/* eslint "indent": [ "error", 4, { "SwitchCase": 1 } ] */
 
 const electron = require('electron');
 const updater = require('electron-updater');
@@ -18,16 +19,32 @@ class Application {
 
         electron.app.setAppUserModelId('com.lutzroeder.netron');
 
-        if (this._makeSingleInstance()) {
+        if (!electron.app.requestSingleInstanceLock()) {
             electron.app.quit();
         }
 
-        electron.ipcMain.on('open-file-dialog', (e, data) => {
+        electron.app.on('second-instance', (event, commandLine, workingDirectory) => {
+            var currentDirectory = process.cwd();
+            process.chdir(workingDirectory);
+            var open = this._parseCommandLine(commandLine);
+            process.chdir(currentDirectory);
+            if (!open) {
+                if (this._views.count > 0) {
+                    var view = this._views.item(0);
+                    if (view) {
+                        view.restore();
+                    }
+                }
+            }
+        });
+
+        electron.ipcMain.on('open-file-dialog', () => {
             this._openFileDialog();
         });
 
         electron.ipcMain.on('drop-files', (e, data) => {
-            this._dropFiles(e.sender, data.files);
+            var files = data.files.filter((file) => fs.statSync(file).isFile());
+            this._dropFiles(e.sender, files);
         });
 
         electron.app.on('will-finish-launching', () => {
@@ -54,35 +71,18 @@ class Application {
         this._checkForUpdates();
     }
 
-    _makeSingleInstance() {
-        return electron.app.makeSingleInstance((argv, workingDirectory) => { 
-            var currentDirectory = process.cwd();
-            process.chdir(workingDirectory);
-            var open = this._parseCommandLine(argv);
-            process.chdir(currentDirectory);
-            if (!open) {
-                if (this._views.count > 0) {
-                    var view = this._views.item(0);
-                    if (view) {
-                        view.restore();
-                    }
-                }
-            }
-        });
-    }
-
     _parseCommandLine(argv) {
         var open = false;
-        if (process.platform == 'win32' && argv.length > 1) {
-            argv.slice(1).forEach((arg) => {
+        if (argv.length > 1) {
+            for (var arg of argv.slice(1)) {
                 if (!arg.startsWith('-')) {
-                    var extension = arg.split('.').pop();
+                    var extension = arg.split('.').pop().toLowerCase();
                     if (extension != '' && extension != 'js' && fs.existsSync(arg) && fs.statSync(arg).isFile()) {
                         this._openFile(arg);
                         open = true;
                     }
                 }
-            });
+            }
         }
         return open;
     }
@@ -101,10 +101,10 @@ class Application {
             this._views.openView();
         }
         this._resetMenu();
-        this._views.on('active-view-changed', (e) => {
+        this._views.on('active-view-changed', () => {
             this._updateMenu();
         });
-        this._views.on('active-view-updated', (e) => {
+        this._views.on('active-view-updated', () => {
             this._updateMenu();
         });
     }
@@ -113,22 +113,27 @@ class Application {
         var showOpenDialogOptions = { 
             properties: [ 'openFile' ], 
             filters: [
-                { name: 'ONNX Model', extension: [ 'onnx', 'pb' ] },
-                { name: 'Keras Model', extension: [ 'h5', 'json', 'keras' ] },
-                { name: 'CoreML Model', extension: [ 'mlmodel' ] },
-                { name: 'Caffe Model', extension: [ 'caffemodel' ] },
-                { name: 'Caffe2 Model', extension: [ 'pb' ] },
-                { name: 'MXNet Model', extension: [ 'model', 'json' ] },
-                { name: 'TensorFlow Graph', extension: [ 'pb', 'meta' ] },
-                { name: 'TensorFlow Saved Model', extension: [ 'pb' ] },
-                { name: 'TensorFlow Lite Model', extension: [ 'tflite' ] }
+                { name: 'All Model Files',  extensions: [ 
+                    'onnx', 'pb',
+                    'h5', 'hdf5', 'json', 'keras',
+                    'mlmodel',
+                    'caffemodel',
+                    'model', 'dnn', 'cmf',
+                    'mar', 'params',
+                    'meta',
+                    'tflite', 'lite',
+                    'pt', 'pth', 't7',
+                    'pkl', 'joblib',
+                    'pbtxt', 'prototxt',
+                    'cfg',
+                    'xml' ] }
             ]
         };
         electron.dialog.showOpenDialog(showOpenDialogOptions, (selectedFiles) => {
             if (selectedFiles) {
-                selectedFiles.forEach((selectedFile) => {
+                for (var selectedFile of selectedFiles) {
                     this._openFile(selectedFile);
-                });
+                }
             }
         });
     }
@@ -138,8 +143,7 @@ class Application {
             this._openFileQueue.push(file);
             return;
         }
-        if (file && file.length > 0 && fs.existsSync(file))
-        {
+        if (file && file.length > 0 && fs.existsSync(file) && fs.statSync(file).isFile()) {
             // find existing view for this file
             var view = this._views.find(file);
             // find empty welcome window
@@ -168,7 +172,7 @@ class Application {
 
     _dropFiles(sender, files) {
         var view = this._views.from(sender);
-        files.forEach((file) => {
+        for (var file of files) {
             if (view) {
                 this._loadFile(file, view);
                 view = null;
@@ -176,7 +180,7 @@ class Application {
             else {
                 this._openFile(file);
             }
-        });
+        }
     }
 
     _export() {
@@ -222,29 +226,16 @@ class Application {
     }
 
     _checkForUpdates() {
-        if (this._isDev()) {
+        if (!electron.app.isPackaged) {
             return;
         }
         var autoUpdater = updater.autoUpdater;
-        autoUpdater.autoDownload = false;
-        autoUpdater.on('update-available', (info) => {
-            var owner = electron.BrowserWindow.getFocusedWindow();
-            var messageBoxOptions = {
-                icon: path.join(__dirname, 'icon.png'),
-                title: ' ',
-                message: 'A new version of ' + electron.app.getName() + ' is available.',
-                detail: 'Click \'Download and Install\' to download the update and automatically install it on exit.',
-                buttons: ['Download and Install', 'Remind Me Later'],
-                defaultId: 0,
-                cancelId: 1
-            };
-            var result = electron.dialog.showMessageBox(owner, messageBoxOptions);
-            if (result == 0) {
-                autoUpdater.autoDownload = true;
-                autoUpdater.checkForUpdatesAndNotify();
-            }
-        });
-        autoUpdater.checkForUpdates();
+        var promise = autoUpdater.checkForUpdates();
+        if (promise) {
+            promise.catch((error) => {
+                console.log(error.message);
+            });
+        }
     }
 
     get package() { 
@@ -277,12 +268,6 @@ class Application {
         electron.dialog.showMessageBox(owner, aboutDialogOptions);
     }
 
-    _isDev() {
-        return ('ELECTRON_IS_DEV' in process.env) ?
-            (parseInt(process.env.ELECTRON_IS_DEV, 10) === 1) :
-            (process.defaultApp || /node_modules[\\/]electron[\\/]/.test(process.execPath));
-    }
-
     _updateMenu() {
         var context = {};
         context.window = electron.BrowserWindow.getFocusedWindow();
@@ -301,14 +286,15 @@ class Application {
                 recents.splice(9);
             }
             this._configuration.set('recents', recents);
-            recents.forEach((recent, index) => {
-                var file = recent.path;
+            for (var i = 0; i < recents.length; i++) {
+                var recent = recents[i];
                 menuRecentsTemplate.push({
+                    file: recent.path,
                     label: Application.minimizePath(recent.path),
-                    accelerator: ((process.platform === 'darwin') ? 'Cmd+' : 'Ctrl+') + (index + 1).toString(),
-                    click: () => { this._openFile(file); }
+                    accelerator: ((process.platform === 'darwin') ? 'Cmd+' : 'Ctrl+') + (i + 1).toString(),
+                    click: (item) => { this._openFile(item.file); }
                 });
-            });
+            }
         }
 
         var menuTemplate = [];
@@ -405,9 +391,14 @@ class Application {
             label: '&View',
             submenu: [
                 {
-                    id: 'view.show-details',
+                    id: 'view.show-attributes',
                     accelerator: 'CmdOrCtrl+D',
-                    click: () => this.execute('toggle-details', null),
+                    click: () => this.execute('toggle-attributes', null),
+                },
+                {
+                    id: 'view.show-initializers',
+                    accelerator: 'CmdOrCtrl+I',
+                    click: () => this.execute('toggle-initializers', null),
                 },
                 {
                     id: 'view.show-names',
@@ -446,10 +437,10 @@ class Application {
                     label: '&Properties...',
                     accelerator: 'CmdOrCtrl+Enter',
                     click: () => this.execute('show-properties', null),
-                }        
+                }
             ]
         };
-        if (this._isDev()) {
+        if (!electron.app.isPackaged) {
             viewTemplate.submenu.push({ type: 'separator' });
             viewTemplate.submenu.push({ role: 'toggledevtools' });
         }
@@ -465,7 +456,7 @@ class Application {
                     { role: 'front'}
                 ]
             });
-        }    
+        }
 
         var helpSubmenu = [
             {
@@ -510,9 +501,13 @@ class Application {
         commandTable['edit.find'] = {
             enabled: (context) => { return context.view && context.view.path ? true : false; }
         };
-        commandTable['view.show-details'] = {
+        commandTable['view.show-attributes'] = {
             enabled: (context) => { return context.view && context.view.path ? true : false; },
-            label: (context) => { return !context.view || !context.view.get('show-details') ? 'Show &Details' : 'Hide &Details'; }
+            label: (context) => { return !context.view || !context.view.get('show-attributes') ? 'Show &Attributes' : 'Hide &Attributes'; }
+        };
+        commandTable['view.show-initializers'] = {
+            enabled: (context) => { return context.view && context.view.path ? true : false; },
+            label: (context) => { return !context.view || !context.view.get('show-initializers') ? 'Show &Initializers' : 'Hide &Initializers'; }
         };
         commandTable['view.show-names'] = {
             enabled: (context) => { return context.view && context.view.path ? true : false; },
@@ -562,7 +557,7 @@ class View {
         const size = electron.screen.getPrimaryDisplay().workAreaSize;
         var options = {};
         options.title = electron.app.getName(); 
-        options.backgroundColor = '#eeeeee';
+        options.backgroundColor = electron.systemPreferences.isDarkMode() ? '#1d1d1d' : '#e6e6e6';
         options.icon = electron.nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
         options.minWidth = 600;
         options.minHeight = 400;
@@ -584,6 +579,7 @@ class View {
                 options.y = 0;
             }
         }
+        options.webPreferences = { nodeIntegration: true };
         this._window = new electron.BrowserWindow(options);
         View._position = this._window.getPosition();
         this._updateCallback = (e, data) => { 
@@ -597,17 +593,23 @@ class View {
             electron.ipcMain.removeListener('update', this._updateCallback);
             this._owner.closeView(this);
         });
-        this._window.on('focus', (e) => {
+        this._window.on('focus', () => {
             this._raise('activated');
         });
-        this._window.on('blur', (e) => {
+        this._window.on('blur', () => {
             this._raise('deactivated');
         });
         this._window.webContents.on('dom-ready', () => {
             this._ready = true;
         });
+        this._window.webContents.on('new-window', (event, url) => {
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+                event.preventDefault();
+                electron.shell.openExternal(url);
+            }
+        });
         var location = url.format({
-            pathname: path.join(__dirname, 'view-electron.html'),
+            pathname: path.join(__dirname, 'electron.html'),
             protocol: 'file:',
             slashes: true
         });
@@ -632,7 +634,7 @@ class View {
                 this._window.webContents.send("open", { file: file });
             });
             var location = url.format({
-                pathname: path.join(__dirname, 'view-electron.html'),
+                pathname: path.join(__dirname, 'electron.html'),
                 protocol: 'file:',
                 slashes: true
             });
@@ -699,9 +701,9 @@ class View {
 
     _raise(event, data) {
         if (this._events && this._events[event]) {
-            this._events[event].forEach((callback) => {
+            for (var callback of this._events[event]) {
                 callback(this, data);
-            });
+            }
         }
     }
 }
@@ -725,10 +727,10 @@ class ViewCollection {
             this._activeView = sender;
             this._raise('active-view-changed', { activeView: this._activeView });
         });
-        view.on('updated', (sender) => {
-            this._raise('active-view-updated', { activeView: this._activeView });            
+        view.on('updated', () => {
+            this._raise('active-view-updated', { activeView: this._activeView });
         });
-        view.on('deactivated', (sender) => {
+        view.on('deactivated', () => {
             this._activeView = null;
             this._raise('active-view-changed', { activeView: this._activeView });
         });
@@ -766,9 +768,9 @@ class ViewCollection {
 
     _raise(event, data) {
         if (this._events && this._events[event]) {
-            this._events[event].forEach((callback) => {
+            for (var callback of this._events[event]) {
                 callback(this, data);
-            });
+            }
         }
     }
 
@@ -777,7 +779,7 @@ class ViewCollection {
         var view = this._views.find(view => view.window == window) || null;
         if (view != this._activeView) {
             this._activeView = view;
-            this._raise('active-view-changed', { activeView: this._activeView });        
+            this._raise('active-view-changed', { activeView: this._activeView });
         }
     }
 }
@@ -785,20 +787,21 @@ class ViewCollection {
 class ConfigurationService {
 
     load() {
+        this._data = { 'recents': [] };
         var dir = electron.app.getPath('userData');
         if (dir && dir.length > 0) {
             var file = path.join(dir, 'configuration.json'); 
             if (fs.existsSync(file)) {
                 var data = fs.readFileSync(file);
                 if (data) {
-                    this._data = JSON.parse(data);
+                    try {
+                        this._data = JSON.parse(data);
+                    }
+                    catch (error) {
+                        // continue regardless of error
+                    }
                 }
             }
-        }
-        if (!this._data) {
-            this._data = {
-                'recents': []
-            };
         }
     }
 
@@ -816,7 +819,7 @@ class ConfigurationService {
     }
 
     has(name) {
-        return this._data && this._data.hasOwnProperty(name);
+        return this._data && Object.prototype.hasOwnProperty.call(this._data, name);
     }
 
     set(name, value) {
@@ -835,13 +838,16 @@ class MenuService {
         this._menuTemplate = menuTemplate;
         this._commandTable = commandTable;
         this._itemTable = {};
-        menuTemplate.forEach((menuTemplateMenu) => {
-            menuTemplateMenu.submenu.forEach((menuTemplateItem) => {
-                if (menuTemplateItem.id) {
-                    this._itemTable[menuTemplateItem.id] = menuTemplateItem;
+        for (var menu of menuTemplate) {
+            for (var item of menu.submenu) {
+                if (item.id) {
+                    if (!item.label) {
+                        item.label = '';
+                    }
+                    this._itemTable[item.id] = item;
                 }
-            });
-        });
+            }
+        }
         this._rebuild();
     }
 
@@ -849,8 +855,20 @@ class MenuService {
         if (!this._menu && !this._commandTable) {
             return;
         }
+        if (this._updateLabel(context)) {
+            this._rebuild();
+        }
+        this._updateEnabled(context);
+    }
+
+    _rebuild() {
+        this._menu = electron.Menu.buildFromTemplate(this._menuTemplate);
+        electron.Menu.setApplicationMenu(this._menu);
+    }
+
+    _updateLabel(context) {
         var rebuild = false;
-        Object.keys(this._commandTable).forEach((id) => {
+        for (var id of Object.keys(this._commandTable)) {
             var menuItem = this._menu.getMenuItemById(id);
             var command = this._commandTable[id];
             if (command && command.label) {
@@ -863,30 +881,21 @@ class MenuService {
                     }
                 }
             }
-        });
-        if (rebuild) {
-            this._rebuild();
         }
-        Object.keys(this._commandTable).forEach((id) => {
+        return rebuild;
+    }
+
+    _updateEnabled(context) {
+        for (var id of Object.keys(this._commandTable)) {
             var menuItem = this._menu.getMenuItemById(id);
             var command = this._commandTable[id];
             if (command) {
                 if (command.enabled) {
                     menuItem.enabled = command.enabled(context);
                 }
-                if (command.label) {
-                    if (menuItem.label != command.label(context)) {
-
-                    }
-                }
             }
-        });
-    }
-
-    _rebuild() {
-        this._menu = electron.Menu.buildFromTemplate(this._menuTemplate);
-        electron.Menu.setApplicationMenu(this._menu);
+        }
     }
 }
 
-var application = new Application();
+global.application = new Application();

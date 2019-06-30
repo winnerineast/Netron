@@ -4,34 +4,49 @@
     "schema": {
       "attributes": [
         {
-          "default": "False",
-          "name": "cudnn_off"
+          "default": false,
+          "name": "cudnn_off",
+          "type": "boolean"
         },
         {
           "default": "off",
           "name": "cudnn_tune"
         },
         {
-          "default": "(1,)",
-          "name": "dilate"
+          "default": [ 1, null ],
+          "name": "dilate",
+          "type": "int32[]"
+        },
+        {
+          "name": "kernel",
+          "type": "int32[]"
         },
         {
           "visible": false,
-          "name": "no_bias"
+          "name": "no_bias",
+          "type": "boolean"
         },
         {
-          "default": "1",
+          "type": "int32",
+          "default": 1,
           "name": "num_group"
         },
         {
-          "default": "(0,)",
-          "name": "pad"
+          "type": "int32",
+          "name": "num_filter"
         },
         {
-          "default": "(1,)",
-          "name": "stride"
+          "default": [0, null],
+          "name": "pad",
+          "type": "int32[]"
         },
         {
+          "default": [1, null],
+          "name": "stride",
+          "type": "int32[]"
+        },
+        {
+          "type": "int32",
           "default": "1024",
           "name": "workspace"
         }
@@ -47,6 +62,11 @@
         {
           "name": "bias",
           "option": "optional"
+        }
+      ],
+      "outputs": [
+        { 
+          "name": "output"
         }
       ]
     }
@@ -64,6 +84,7 @@
           "name": "num_group"
         },
         {
+          "type": "int32",
           "default": "1024",
           "name": "workspace"
         }
@@ -79,6 +100,11 @@
         {
           "name": "bias"
         }
+      ],
+      "outputs": [
+        { 
+          "name": "output"
+        }
       ]
     }
   },
@@ -87,13 +113,20 @@
     "schema": {
       "attributes": [
         {
-          "default": "True",
+          "type": "boolean",
+          "default": true,
           "name": "flatten"
         },
         {
+          "type": "boolean",
           "visible": false,
           "name": "no_bias"
+        },
+        {
+          "type": "int32",
+          "name": "num_hidden"
         }
+
       ],
       "category": "Layer",
       "inputs": [
@@ -106,19 +139,49 @@
         {
           "name": "bias"
         }
+      ],
+      "outputs": [
+        { 
+          "name": "output"
+        }
       ]
     }
   },
   {
     "name": "Dropout",
     "schema": {
-      "category": "Dropout"
+      "category": "Dropout",
+      "attributes": [
+        {
+          "type": "float32",
+          "default": 0.5,
+          "name": "p"
+        }
+      ],
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   },
   {
     "name": "LRN",
     "schema": {
-      "category": "Normalization"
+      "category": "Normalization",
+      "attributes": [
+        { "name": "alpha", "type": "float32", "default": 0.0001 },
+        { "name": "beta", "type": "float32", "default": 0.75 },
+        { "name": "knorm", "type": "float32", "default": 2 },
+        { "name": "nsize", "type": "int32" }
+      ],
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   },
   {
@@ -134,7 +197,7 @@
           "name": "ignore_label"
         },
         {
-          "default": "False",
+          "default": false,
           "name": "multi_output"
         },
         {
@@ -142,7 +205,7 @@
           "name": "normalization"
         },
         {
-          "default": "False",
+          "default": false,
           "name": "out_grad"
         },
         {
@@ -150,11 +213,11 @@
           "name": "smooth_alpha"
         },
         {
-          "default": "False",
+          "default": false,
           "name": "use_ignore"
         },
         {
-          "default": "False",
+          "default": false,
           "name": "preserve_shape"
         }
       ],
@@ -166,6 +229,9 @@
         {
           "name": "label"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -174,9 +240,10 @@
     "schema": {
       "category": "Activation",
       "inputs": [
-        {
-          "name": "input"
-        }
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -185,19 +252,24 @@
     "schema": {
       "category": "Activation",
       "inputs": [
-        {
-          "name": "input"
-        },
-        {
-          "name": "weight"
-        }
+        { "name": "input" },
+        { "name": "weight" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
   {
     "name": "Activation",
     "schema": {
-      "category": "Activation"
+      "category": "Activation",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   },
   {
@@ -205,33 +277,55 @@
     "schema": {
       "attributes": [
         {
-          "default": "False",
+          "default": false,
           "name": "cudnn_off"
         },
         {
-          "default": "False",
+          "default": false,
           "name": "global_pool"
         },
         {
-          "default": "(0,)",
-          "name": "pad"
+          "name": "kernel",
+          "type": "int32[]"
+        },
+        {
+          "default": [ 0, null ],
+          "name": "pad",
+          "type": "int32[]"
         },
         {
           "default": "valid",
           "name": "pooling_convention"
         },
         {
-          "default": "(1,)",
-          "name": "stride"
+          "default": "max",
+          "name": "pool_type"
+        },
+        {
+          "default": [ 1, null ],
+          "name": "stride",
+          "type": "int32[]"
         }
       ],
-      "category": "Pool"
+      "category": "Pool",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   },
   {
     "name": "Flatten",
     "schema": {
-      "category": "Shape"
+      "category": "Shape",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   },
   {
@@ -253,6 +347,9 @@
           "name": "inputs",
           "option": "variadic"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -264,6 +361,9 @@
           "name": "inputs",
           "option": "variadic"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -275,6 +375,9 @@
           "name": "inputs",
           "option": "variadic"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -283,37 +386,41 @@
     "schema": {
       "attributes": [
         {
-          "default": "1",
+          "type": "int32",
+          "default": 1,
           "name": "axis"
         },
         {
-          "default": "0.001",
+          "type": "float64",
+          "default": 0.001,
           "name": "eps"
         },
         {
-          "default": "0.9",
+          "type": "float32",
+          "default": 0.9,
           "name": "momentum"
         },
         {
-          "default": "True",
+          "type": "boolean",
+          "default": true,
           "name": "fix_gamma"
         },
         {
-          "default": "False",
+          "type": "boolean",
+          "default": false,
           "name": "use_global_stats"
         }
       ],
       "category": "Normalization",
       "inputs": [
-        {
-          "name": "input"
-        },
-        {
-          "name": "gamma"
-        },
-        {
-          "name": "beta"
-        }
+        { "name": "input" },
+        { "name": "gamma" },
+        { "name": "beta" },
+        { "name": "mean" },
+        { "name": "variance" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -331,6 +438,9 @@
         {
           "name": "beta"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -343,6 +453,9 @@
           "name": "inputs",
           "option": "variadic"
         }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -350,9 +463,22 @@
     "name": "Embedding",
     "schema": {
       "category": "Transform",
+      "attributes": [
+        {
+          "type": "int32",
+          "name": "input_dim"
+        },
+        {
+          "type": "int32",
+          "name": "output_dim"
+        }
+      ],
       "inputs": [
         { "name": "input" },
         { "name": "weight" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
@@ -362,25 +488,257 @@
       "category": "Layer",
       "attributes": [
         { 
+          "type": "boolean",
           "name": "bidirectional", 
-          "default": "False" 
+          "default": false
         },
         { 
           "name": "lstm_parameters", 
-          "visible": false 
+          "visible": false
+        },
+        { 
+          "type": "int32",
+          "name": "num_layers"
+        },
+        { 
+          "type": "boolean",
+          "default": false,
+          "name": "state_outputs"
+        },
+        { 
+          "type": "int32",
+          "name": "state_size"
+        },
+        { 
+          "type": "float32",
+          "name": "p",
+          "default": 0.0
         }
       ],
       "inputs": [
         { "name": "input" },
         { "name": "state_0" },
         { "name": "state_1" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   },
   {
     "name": "Reshape",
     "schema": {
-      "category": "Shape"
+      "category": "Shape",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_minus_scalar",
+    "schema": {
+      "attributes": [
+        { "name": "scalar", "type": "float32" }
+      ],
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_mul_scalar",
+    "schema": {
+      "attributes": [
+        { "name": "scalar", "type": "float32" }
+      ],
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "broadcast_mul",
+    "schema": {
+      "inputs": [
+        { "name": "lhs" },
+        { "name": "rhs" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "broadcast_add",
+    "schema": {
+      "inputs": [
+        { "name": "lhs" },
+        { "name": "rhs" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_copy",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_minus_scalar",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_mul_scalar",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "slice_axis",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "Pad",
+    "schema": {
+      "category": "Tensor",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "relu",
+    "schema": {
+      "category": "Activation",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "softmax",
+    "schema": {
+      "category": "Activation",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_linalg_gemm2",
+    "schema": {
+      "category": "Layer",
+      "inputs": [
+        { "name": "input" },
+        { "name": "weights" },
+        { "name": "bias" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_zeros",
+    "schema": {
+      "category": "Constant",
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "_sub",
+    "schema": {
+      "inputs": [
+        { "name": "x" },
+        { "name": "y" }
+      ],
+      "outputs": [
+        { "name": "z" }
+      ]
+    }
+  },
+  {
+    "name": "_mul",
+    "schema": {
+      "inputs": [
+        { "name": "x" },
+        { "name": "y" }
+      ],
+      "outputs": [
+        { "name": "z" }
+      ]
+    }
+  },
+  {
+    "name": "MakeLoss",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "transpose",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
     }
   }
 ]

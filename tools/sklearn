@@ -1,0 +1,81 @@
+#!/bin/bash
+
+set -e
+
+root=$(cd $(dirname ${0})/..; pwd)
+third_party=${root}/third_party
+tools=${root}/tools
+
+identifier=scikit-learn
+virtualenv=${third_party}/virtualenv/${identifier}
+
+if [ $(which python3) ]; then
+    python="python3"
+else
+    python="python"
+fi
+
+bold() {
+    echo "$(tty -s && tput bold)$1$(tty -s && tput sgr0)" 
+}
+
+git_sync() {
+    mkdir -p "${third_party}"
+    if [ -d "${third_party}/${1}" ]; then
+        git -C "${third_party}/${1}" fetch --quiet -p
+        git -C "${third_party}/${1}" reset --quiet --hard origin/master
+    else
+        git -C "${third_party}" clone --quiet --recursive ${2} ${1}
+    fi
+    git -C "${third_party}" submodule update --quiet --init
+}
+
+sync() {
+    bold "sklearn sync"
+    git_sync numpy https://github.com/numpy/numpy.git
+    git_sync scikit-learn https://github.com/scikit-learn/scikit-learn.git
+    git_sync lightgbm https://github.com/Microsoft/LightGBM.git
+    git_sync xgboost https://github.com/dmlc/xgboost.git
+}
+
+install() {
+    bold "sklearn install"
+    case "$(uname)" in
+        "Darwin")
+            brew list libomp > /dev/null 2>&1 || brew install libomp > /dev/null
+            export CC=/usr/bin/clang
+            export CXX=/usr/bin/clang++
+            export CPPFLAGS="$CPPFLAGS -Xpreprocessor -fopenmp"
+            export CFLAGS="$CFLAGS -I/usr/local/opt/libomp/include"
+            export CXXFLAGS="$CXXFLAGS -I/usr/local/opt/libomp/include"
+            export LDFLAGS="$LDFLAGS -L/usr/local/opt/libomp/lib -lomp"
+            export DYLD_LIBRARY_PATH=/usr/local/opt/libomp/lib
+            ;;
+    esac
+    [ -n "$(python3 -m pip list --format columns --disable-pip-version-check | grep -w virtualenv)" ] || ${python} -m pip install --force-reinstall --user --quiet virtualenv
+    [ -d "${virtualenv}" ] || virtualenv --quiet -p ${python} ${virtualenv}
+    source ${virtualenv}/bin/activate
+    ${python} -m pip install --quiet Cython
+    ${python} -m pip install --quiet numpy
+    ${python} -m pip install --quiet scipy
+    ${python} -m pip install --quiet ${third_party}/scikit-learn
+    deactivate
+}
+
+metadata() {
+    bold "sklearn metadata"
+    source ${virtualenv}/bin/activate
+    pushd ${tools} > /dev/null
+    ${python} sklearn-script.py
+    popd > /dev/null
+    deactivate
+}
+
+while [ "$#" != 0 ]; do
+    command="$1" && shift
+    case "${command}" in
+        "sync") sync;;
+        "install") install;;
+        "metadata") metadata;;
+    esac
+done

@@ -12,12 +12,12 @@
         { "name": "output", "type": "T" }
       ],
       "attributes": [
-        { "name": "padding", "type": "Padding" },
-        { "name": "stride_w", "type": "int" },
-        { "name": "stride_h", "type": "int" },
+        { "name": "padding", "type": "Padding", "default": "SAME" },
         { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" },
-        { "name": "dilation_w_factor", "type": "int", "default": 1 },
-        { "name": "dilation_h_factor", "type": "int", "default": 1 }
+        { "name": "stride_w", "type": "int32", "default": 1 },
+        { "name": "stride_h", "type": "int32", "default": 1 },
+        { "name": "dilation_w_factor", "type": "int32", "default": 1 },
+        { "name": "dilation_h_factor", "type": "int32", "default": 1 }
       ]
     }
   },
@@ -52,7 +52,10 @@
         { "name": "output", "type": "T" }
       ],
       "attributes": [
-        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
+        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" },
+        { "name": "cell_clip", "type": "float32", "default": 0.0 },
+        { "name": "proj_clip", "type": "float32", "default": 0.0 },
+        { "name": "kernel_type", "type": "LSTMKernelType", "default": "FULL" }
       ]
     }
   },
@@ -88,6 +91,7 @@
         { "name": "output", "type": "T" }
       ],
       "attributes": [
+        { "name": "weights_format", "type": "FullyConnectedOptionsWeightsFormat", "default": "DEFAULT" },
         { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
       ]
     }
@@ -105,11 +109,13 @@
         { "name": "output", "type": "T" }
       ],
       "attributes": [
-        { "name": "padding", "type": "Padding" },
-        { "name": "stride_w", "type": "int" },
-        { "name": "stride_h", "type": "int" },
-        { "name": "depth_multiplier", "type": "int" },
-        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
+        { "name": "padding", "type": "Padding", "default": "SAME" },
+        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" },
+        { "name": "stride_w", "type": "int32", "default": 1 },
+        { "name": "stride_h", "type": "int32", "default": 1 },
+        { "name": "depth_multiplier", "type": "int32", "default": 1 },
+        { "name": "dilation_w_factor", "type": "int32", "default": 1 },
+        { "name": "dilation_h_factor", "type": "int32", "default": 1 }
       ]
     }
   },
@@ -122,6 +128,14 @@
       ],
       "outputs": [
         { "name": "output", "type": "T" }
+      ],
+      "attributes": [
+        { "name": "padding", "type": "Padding", "default": "SAME" },
+        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" },
+        { "name": "stride_w", "type": "int32" },
+        { "name": "stride_h", "type": "int32" },
+        { "name": "filter_width", "type": "int32" },
+        { "name": "filter_height", "type": "int32" }
       ]
     }
   },
@@ -150,9 +164,36 @@
     }
   },
   {
+    "name": "Relu6",
+    "schema": {
+      "category": "Activation",
+      "inputs": [
+        { "name": "input", "type": "T" }
+      ],
+      "outputs": [
+        { "name": "output", "type": "T" }
+      ]
+    }
+  },
+  {
+    "name": "Tanh",
+    "schema": {
+      "category": "Activation",
+      "inputs": [
+        { "name": "input", "type": "T" }
+      ],
+      "outputs": [
+        { "name": "output", "type": "T" }
+      ]
+    }
+  },
+  {
     "name": "Reshape",
     "schema": {
       "category": "Shape",
+      "attributes": [
+        { "name": "new_shape", "type": "shape"}
+      ],
       "inputs": [
         { "name": "data", "type": "T" },
         { "name": "shape", "type": "T" }
@@ -171,6 +212,14 @@
       ],
       "outputs": [
         { "name": "output", "type": "T" }
+      ],
+      "attributes": [
+        { "name": "padding", "type": "Padding", "default": "SAME" },
+        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" },
+        { "name": "stride_w", "type": "int32" },
+        { "name": "stride_h", "type": "int32" },
+        { "name": "filter_width", "type": "int32" },
+        { "name": "filter_height", "type": "int32" }
       ]
     }
   },
@@ -186,7 +235,7 @@
         { "name": "output" }
       ],
       "attributes": [
-        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
+        { "name": "type", "type": "LSHProjectionType" }
       ]
     }
   },
@@ -265,7 +314,7 @@
         { "name": "output" }
       ],
       "attributes": [
-        { "name": "axis", "type": "int" },
+        { "name": "axis", "type": "int32" },
         { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
       ]
     }
@@ -336,6 +385,9 @@
       "outputs": [
         { "name": "state", "type": "T" },
         { "name": "output", "type": "T" }
+      ],
+      "attributes": [
+        { "name": "fused_activation_function", "type": "ActivationFunctionType", "default": "NONE" }
       ]
     }
   },
@@ -393,6 +445,32 @@
       ],
       "outputs": [
         { "name": "output", "type": "T" }
+      ]
+    }
+  },
+  {
+    "name": "Logistic",
+    "schema": {
+      "inputs": [
+        { "name": "input" }
+      ],
+      "outputs": [
+        { "name": "output" }
+      ]
+    }
+  },
+  {
+    "name": "ResizeBilinear",
+    "schema": {
+      "attributes": [
+        { "name": "align_corners", "default": false }
+      ],
+      "inputs": [
+        { "name": "input" },
+        { "name": "size" }
+      ],
+      "outputs": [
+        { "name": "output" }
       ]
     }
   }

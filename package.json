@@ -1,28 +1,36 @@
 {
-    "name": "Netron",
+    "name": "netron",
+    "productName": "Netron",
     "author": {
         "name": "Lutz Roeder",
         "email": "lutzroeder@users.noreply.github.com",
-        "url": "lutzroeder.com"
+        "url": "https://www.lutzroeder.com"
     },
-    "version": "1.9.9",
+    "version": "3.2.3",
     "description": "Viewer neural network models",
     "license": "MIT",
-    "repository": "lutzroeder/Netron",
+    "repository": "lutzroeder/netron",
     "main": "src/app.js",
+    "scripts": {
+        "start": "[ -d node_modules ] || npm install && npx electron .",
+        "start_server": "[ -d node_modules ] || npm install && python3 setup.py --quiet build && PYTHONPATH=build/lib python3 -c 'import netron; netron.main()' $@"
+    },
     "dependencies": {
-        "d3": "latest",
-        "dagre": "latest",
-        "electron-updater": "^3.0.3",
-        "flatbuffers": "latest",
-        "handlebars": "latest",
-        "marked": "latest",
-        "npm-font-open-sans": "latest",
-        "protobufjs": "latest",
-        "universal-analytics": "latest"
+        "d3": "5.9.7",
+        "dagre": "0.8.4",
+        "electron-updater": "4.0.14",
+        "flatbuffers": "1.11.0",
+        "handlebars": "4.1.2",
+        "long": "4.0.0",
+        "marked": "0.6.2",
+        "pako": "1.0.10",
+        "protobufjs": "github:lutzroeder/protobuf.js#pbtxt",
+        "universal-analytics": "0.4.20"
     },
     "devDependencies": {
-        "electron": "latest",
-        "electron-builder": "latest"
+        "electron": "5.0.5",
+        "electron-builder": "20.44.4",
+        "eslint": "6.0.1",
+        "xmldom": "0.1.27"
     }
 }

@@ -1,0 +1,51 @@
+#!/bin/bash
+
+set -e
+
+root=$(cd $(dirname ${0})/..; pwd)
+node_modules=${root}/node_modules
+src=${root}/src
+third_party=${root}/third_party
+tools=${root}/tools
+
+identifier=paddle
+virtualenv=${third_party}/virtualenv/${identifier}
+
+bold() {
+    echo "$(tty -s && tput bold)$1$(tty -s && tput sgr0)" 
+}
+
+git_sync () {
+    mkdir -p "${third_party}"
+    if [ -d "${third_party}/${1}" ]; then
+        git -C "${third_party}/${1}" fetch -p --quiet
+        git -C "${third_party}/${1}" reset --quiet --hard origin/$(git -C "${third_party}/${1}" rev-parse --abbrev-ref HEAD)
+    else
+        git -C "${third_party}" clone --quiet --recursive ${2} ${1}
+    fi
+}
+
+clean() {
+    bold "paddle clean"
+    rm -rf ${third_party}/paddle
+}
+
+sync() {
+    bold "paddle sync"
+    git_sync paddle https://github.com/PaddlePaddle/Paddle.git
+}
+
+schema() {
+    bold "paddle schema"
+    ${node_modules}/protobufjs/bin/pbjs -t static-module -w closure --no-encode --no-delimited --no-comments --no-convert --no-verify --no-create --keep-case -r paddle -o ${src}/paddle-proto.js ${third_party}/${identifier}/paddle/fluid/framework/framework.proto
+}
+
+while [ "$#" != 0 ]; do
+    command="$1" && shift
+    case "${command}" in
+        "clean") clean;;
+        "sync") sync;;
+        "install") install;;
+        "schema") schema;;
+    esac
+done

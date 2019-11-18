@@ -15,7 +15,7 @@ host.ElectronHost = class {
 
     constructor() {
         if (electron.remote.app.isPackaged) {
-            this._telemetry = require('universal-analytics')('UA-54146-13');
+            this._telemetry = require('universal-analytics')('UA-54146-13', electron.remote.getGlobal('global').userId);
         }
 
         this._version = electron.remote.app.getVersion();
@@ -27,25 +27,11 @@ host.ElectronHost = class {
             throw new Error('window.eval() not supported.');
         };
 
-        this._updateTheme();
-        if (electron.remote.systemPreferences.subscribeNotification) {
-            electron.remote.systemPreferences.subscribeNotification('AppleInterfaceThemeChangedNotification', () => this._updateTheme());
-        }
-        document.body.style.opacity = 1;
+        this.document.body.style.opacity = 1;
     }
 
     get document() {
         return window.document;
-    }
-
-    _updateTheme() {
-        if (electron.remote.systemPreferences.isDarkMode &&
-            electron.remote.systemPreferences.isDarkMode()) {
-            document.body.classList.add('dark-mode');
-        }
-        else {
-            document.body.classList.remove('dark-mode');
-        }
     }
 
     get version() {
@@ -109,7 +95,7 @@ host.ElectronHost = class {
             this._view.showModelProperties();
         });
 
-        var openFileButton = document.getElementById('open-file-button');
+        var openFileButton = this.document.getElementById('open-file-button');
         if (openFileButton) {
             openFileButton.style.opacity = 1;
             openFileButton.addEventListener('click', () => {
@@ -117,13 +103,13 @@ host.ElectronHost = class {
             });
         }
 
-        document.addEventListener('dragover', (e) => {
+        this.document.addEventListener('dragover', (e) => {
             e.preventDefault();
         });
-        document.addEventListener('drop', (e) => {
+        this.document.addEventListener('drop', (e) => {
             e.preventDefault();
         });
-        document.body.addEventListener('drop', (e) => { 
+        this.document.body.addEventListener('drop', (e) => { 
             e.preventDefault();
             var files = [];
             for (var i = 0; i < e.dataTransfer.files.length; i++) {
@@ -153,7 +139,7 @@ host.ElectronHost = class {
             message: message,
             detail: detail,
         };
-        electron.remote.dialog.showMessageBox(owner, options);
+        electron.remote.dialog.showMessageBoxSync(owner, options);
     }
 
     confirm(message, detail) {
@@ -166,7 +152,7 @@ host.ElectronHost = class {
             defaultId: 0,
             cancelId: 1
         };
-        var result = electron.remote.dialog.showMessageBox(owner, options);
+        var result = electron.remote.dialog.showMessageBoxSync(owner, options);
         return result == 0;
     }
 
@@ -187,11 +173,10 @@ host.ElectronHost = class {
             buttonLabel: 'Export',
             filters: [ { name: name, extensions: [ extension ] } ]
         };
-        electron.remote.dialog.showSaveDialog(owner, showSaveDialogOptions, (filename) => {
-            if (filename) {
-                callback(filename);
-            }
-        });
+        const selectedFile = electron.remote.dialog.showSaveDialogSync(owner, showSaveDialogOptions);
+        if (selectedFile) {
+            callback(selectedFile);
+        }
     }
 
     export(file, blob) {
@@ -229,7 +214,7 @@ host.ElectronHost = class {
             var pathname = path.join(base || __dirname, file);
             fs.exists(pathname, (exists) => {
                 if (!exists) {
-                    reject(new Error('File not found.'));
+                    reject(new Error("File not found '" + file + "'."));
                 }
                 else {
                     fs.readFile(pathname, encoding, (err, data) => {
@@ -249,13 +234,13 @@ host.ElectronHost = class {
         electron.shell.openExternal(url);
     }
 
-    exception(err, fatal) {
-        if (this._telemetry) {
+    exception(error, fatal) {
+        if (this._telemetry && error && error.telemetry !== false) {
             try {
                 var description = [];
-                description.push((err && err.name ? (err.name + ': ') : '') + (err && err.message ? err.message : '(null)'));
-                if (err.stack) {
-                    var match = err.stack.match(/\n {4}at (.*)\((.*)\)/);
+                description.push((error && error.name ? (error.name + ': ') : '') + (error && error.message ? error.message : '(null)'));
+                if (error.stack) {
+                    var match = error.stack.match(/\n {4}at (.*)\((.*)\)/);
                     if (match) {
                         description.push(match[1] + '(' + match[2].split('/').pop().split('\\').pop() + ')');
                     }

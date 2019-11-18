@@ -13,13 +13,13 @@ var zip = zip || require('./zip');
 pytorch.ModelFactory = class {
 
     match(context) {
-        var identifier = context.identifier; 
-        var extension = identifier.split('.').pop().toLowerCase();
-        var buffer = null;
-        if (extension == 'pt' || extension == 'pth' || extension == 'pkl' || extension == 'h5' || extension == 't7' ||
-            extension == 'dms' || extension == 'model' || extension == 'ckpt' || identifier.endsWith('.pth.tar')) {
-            buffer = context.buffer;
-            var torch = [ 0x8a, 0x0a, 0x6c, 0xfc, 0x9c, 0x46, 0xf9, 0x20, 0x6a, 0xa8, 0x50, 0x19 ];
+        const identifier = context.identifier; 
+        const extension = identifier.split('.').pop().toLowerCase();
+        if (extension === 'pth' || extension === 'pkl' || extension === 'pt' || extension === 'bin' ||
+            extension === 'h5' || extension === 't7' || extension === 'dms' || extension === 'model' ||
+            extension === 'ckpt' || identifier.endsWith('.pth.tar')) {
+            const buffer = context.buffer;
+            const torch = [ 0x8a, 0x0a, 0x6c, 0xfc, 0x9c, 0x46, 0xf9, 0x20, 0x6a, 0xa8, 0x50, 0x19 ];
             if (buffer && buffer.length > 14 && buffer[0] == 0x80 && torch.every((v, i) => v == buffer[i + 2])) {
                 return true;
             }
@@ -32,23 +32,23 @@ pytorch.ModelFactory = class {
 
     open(context, host) {
         return host.require('./pickle').then((pickle) => {
-            var identifier = context.identifier;
-            var buffer = context.buffer;
+            const identifier = context.identifier;
+            const buffer = context.buffer;
+            let sys_info = null;
+            let root_module = null;
+            let state_dict = null;
+            let module_source_map = {};
             try {
-                var unpickler = new pickle.Unpickler(buffer);
+                let unpickler = new pickle.Unpickler(buffer);
 
-                var signature = [ 0x6c, 0xfc, 0x9c, 0x46, 0xf9, 0x20, 0x6a, 0xa8, 0x50, 0x19 ];
-                var magic_number = unpickler.load();
+                const signature = [ 0x6c, 0xfc, 0x9c, 0x46, 0xf9, 0x20, 0x6a, 0xa8, 0x50, 0x19 ];
+                const magic_number = unpickler.load();
 
-                var module_source_map = {};
-                var deserialized_objects = {};
-                var sys_info = null;
-                var root_module = null;
-                var state_dict = null;
-                var storage = null;
+                let deserialized_objects = {};
+                let storage = null;
 
-                var constructorTable = {};
-                var functionTable = {};
+                let constructorTable = {};
+                let functionTable = {};
 
                 constructorTable['argparse.Namespace'] = function (args) {
                     this.args = args;
@@ -57,6 +57,7 @@ pytorch.ModelFactory = class {
                 constructorTable['torch.backends.cudnn.rnn.Unserializable'] = function() {};
                 constructorTable['torch.nn.backends.thnn._get_thnn_function_backend'] = function() {};
                 constructorTable['torch.nn.modules.activation.ELU'] = function() {};
+                constructorTable['torch.nn.modules.activation.GLU'] = function() {};
                 constructorTable['torch.nn.modules.activation.Hardtanh'] = function() {};
                 constructorTable['torch.nn.modules.activation.LeakyReLU'] = function() {};
                 constructorTable['torch.nn.modules.activation.LogSigmoid'] = function() {};
@@ -68,11 +69,13 @@ pytorch.ModelFactory = class {
                 constructorTable['torch.nn.modules.activation.Sigmoid'] = function() {};
                 constructorTable['torch.nn.modules.activation.Softmax'] = function() {};
                 constructorTable['torch.nn.modules.activation.Softmax2d'] = function() {};
+                constructorTable['torch.nn.modules.activation.Softplus'] = function() {};
                 constructorTable['torch.nn.modules.activation.Tanh'] = function() {};
                 constructorTable['torch.nn.modules.activation.Threshold'] = function() {};
                 constructorTable['torch.nn.modules.batchnorm.BatchNorm1d'] = function() {};
                 constructorTable['torch.nn.modules.batchnorm.BatchNorm2d'] = function() {};
                 constructorTable['torch.nn.modules.batchnorm.BatchNorm3d'] = function() {};
+                constructorTable['torch.nn.modules.batchnorm.SyncBatchNorm'] = function() {};
                 constructorTable['torch.nn.modules.container.ModuleDict'] = function() {};
                 constructorTable['torch.nn.modules.container.ModuleList'] = function() {};
                 constructorTable['torch.nn.modules.container.ParameterList'] = function() {};
@@ -94,7 +97,9 @@ pytorch.ModelFactory = class {
                 constructorTable['torch.nn.modules.loss.BCELoss'] = function() {};
                 constructorTable['torch.nn.modules.loss.BCEWithLogitsLoss'] = function() {}; 
                 constructorTable['torch.nn.modules.loss.CrossEntropyLoss'] = function() {};
+                constructorTable['torch.nn.modules.loss.L1Loss'] = function() {};
                 constructorTable['torch.nn.modules.loss.MSELoss'] = function() {};
+                constructorTable['torch.nn.modules.loss.NLLLoss'] = function() {};
                 constructorTable['torch.nn.modules.normalization.CrossMapLRN2d'] = function() {};
                 constructorTable['torch.nn.modules.normalization.GroupNorm'] = function() {};
                 constructorTable['torch.nn.modules.normalization.LayerNorm'] = function() {};
@@ -118,6 +123,7 @@ pytorch.ModelFactory = class {
                 constructorTable['torch.nn.modules.pooling.AvgPool1d'] = function() {};
                 constructorTable['torch.nn.modules.pooling.AvgPool2d'] = function() {};
                 constructorTable['torch.nn.modules.pooling.AvgPool3d'] = function() {};
+                constructorTable['torch.nn.modules.pooling.FractionalMaxPool2d'] = function() {};
                 constructorTable['torch.nn.modules.pooling.MaxPool1d'] = function() {};
                 constructorTable['torch.nn.modules.pooling.MaxPool2d'] = function() {};
                 constructorTable['torch.nn.modules.pooling.MaxPool3d'] = function() {};
@@ -144,6 +150,8 @@ pytorch.ModelFactory = class {
                 constructorTable['torch.nn.utils.spectral_norm.SpectralNormLoadStateDictPreHook'] = function() {};
                 constructorTable['torch.nn.utils.weight_norm.WeightNorm'] = function() {};
                 constructorTable['torch.optim.adam.Adam'] = function() {};
+                constructorTable['torch.optim.adagrad.Adagrad'] = function() {};
+                constructorTable['torch.optim.lr_scheduler.MultiStepLR'] = function() {};
                 constructorTable['torch.optim.lr_scheduler.StepLR'] = function() {};
                 constructorTable['torch.optim.rmsprop.RMSprop'] = function() {};
                 constructorTable['torch.optim.sgd.SGD'] = function() {};
@@ -166,14 +174,21 @@ pytorch.ModelFactory = class {
                 constructorTable['torchvision.models.mobilenet.InvertedResidual'] = function() {};
                 constructorTable['torchvision.models.resnet.Bottleneck'] = function() {};
                 constructorTable['torchvision.models.resnet.BasicBlock'] = function() {};
+                constructorTable['torchvision.models.segmentation.deeplabv3.ASPP'] = function() {};
+                constructorTable['torchvision.models.segmentation.deeplabv3.ASPPConv'] = function() {}; 
+                constructorTable['torchvision.models.segmentation.deeplabv3.ASPPPooling'] = function() {};
+                constructorTable['torchvision.models.segmentation.deeplabv3.DeepLabHead'] = function() {};
+                constructorTable['torchvision.models.segmentation.deeplabv3.DeepLabV3'] = function() {};
                 constructorTable['torchvision.models.squeezenet.Fire'] = function() {};
                 constructorTable['torchvision.models.squeezenet.SqueezeNet'] = function() {};
                 constructorTable['torchvision.models.resnet.ResNet'] = function() {};
                 constructorTable['torchvision.models.vgg.VGG'] = function() {};
+                constructorTable['torchvision.models._utils.IntermediateLayerGetter'] = function() {};
                 constructorTable['torchvision.transforms.transforms.Compose'] = function() {};
                 constructorTable['torchvision.transforms.transforms.Normalize'] = function() {};
                 constructorTable['torchvision.transforms.transforms.Resize'] = function() {};
                 constructorTable['torchvision.transforms.transforms.ToTensor'] = function() {};
+
                 constructorTable['torch.ByteStorage'] = function (size) { 
                     this.size = size; this.dataTypeSize = 1; this.dataType = 'uint8'; 
                 };
@@ -197,6 +212,9 @@ pytorch.ModelFactory = class {
                 };
                 constructorTable['torch.DoubleStorage'] = function (size) { 
                     this.size = size; this.dataTypeSize = 8; this.dataType = 'float64';
+                };
+                constructorTable['torch.QInt8Storage'] = function (size) { 
+                    this.size = size; this.dataTypeSize = 1; this.dataType = 'qint8';
                 };
                 constructorTable['torch.FloatTensor'] = function () {
                     this.__setstate__ = function(state) {
@@ -283,12 +301,14 @@ pytorch.ModelFactory = class {
                         this.rawdata = state[4];
                     };
                     this.__read__ = function(unpickler) {
-                        var array = {};
-                        array.__type__ = this.subtype;
+                        let array = {};
+                        const subtype = this.subtype.split('.');
+                        array.__name__ = subtype.pop();
+                        array.__module__ = subtype.join('.');
                         array.dtype = this.typecode;
                         array.shape = this.shape;
-                        var size = array.dtype.itemsize;
-                        for (var i = 0; i < array.shape.length; i++) {
+                        let size = array.dtype.itemsize;
+                        for (let i = 0; i < array.shape.length; i++) {
                             size = size * array.shape[i];
                         }
                         if (typeof this.rawdata == 'string') {
@@ -311,53 +331,70 @@ pytorch.ModelFactory = class {
                     return {};
                 };
                 functionTable['collections.OrderedDict'] = function(args) {
-                    var obj = [];
+                    let obj = [];
                     obj.__setitem__ = function(key, value) {
                         obj.push({ key: key, value: value });
                     };
                     if (args) {
-                        for (var arg of args) {
+                        for (let arg of args) {
                             obj.__setitem__(arg[0], arg[1]);
                         }
                     }
                     return obj;
                 };
                 functionTable['torch._utils._rebuild_tensor'] = function (storage, storage_offset, size, stride) {
-                    var obj = {};
-                    obj.__type__ = storage.__type__.replace('Storage', 'Tensor');
-                    obj.storage = storage;
-                    obj.storage_offset = storage_offset;
-                    obj.size = size;
-                    obj.stride = stride;
-                    return obj;
+                    return {
+                        __module__: storage.__module__,
+                        __name__: storage.__name__.replace('Storage', 'Tensor'),
+                        storage: storage,
+                        storage_offset: storage_offset,
+                        size: size,
+                        stride: stride
+                    };
                 };
                 functionTable['torch._utils._rebuild_tensor_v2'] = function (storage, storage_offset, size, stride, requires_grad, backward_hooks) {
-                    var obj = {};
-                    obj.__type__ = storage.__type__.replace('Storage', 'Tensor');
-                    obj.storage = storage;
-                    obj.storage_offset = storage_offset;
-                    obj.size = size;
-                    obj.stride = stride;
-                    obj.requires_grad = requires_grad;
-                    obj.backward_hooks =  backward_hooks;
-                    return obj;
+                    return {
+                        __module__: storage.__module__,
+                        __name__: storage.__name__.replace('Storage', 'Tensor'),
+                        storage: storage,
+                        storage_offset: storage_offset,
+                        size: size,
+                        stride: stride,
+                        requires_grad: requires_grad,
+                        backward_hooks:  backward_hooks
+                    };
                 };
                 functionTable['torch._utils._rebuild_parameter'] = function(data, requires_grad, backward_hooks) {
-                    var obj = {};
-                    obj.__type__ = 'torch.nn.parameter.Parameter';
-                    constructorTable[obj.__type__].apply(obj, [ data, requires_grad ]);
+                    let obj = {
+                        __module__: 'torch.nn.parameter',
+                        __name__: 'Parameter'
+                    };
+                    constructorTable[obj.__module__ + '.' + obj.__name__].apply(obj, [ data, requires_grad ]);
                     obj.backward_hooks = backward_hooks;
                     return obj;
                 };
+                functionTable['torch._utils._rebuild_qtensor'] = function(storage, storage_offset, size, stride, quantizer_params, requires_grad, backward_hooks) {
+                    return {
+                        __module__: storage.__module__,
+                        __name__: storage.__name__.replace('Storage', 'Tensor'),
+                        storage: storage,
+                        storage_offset: storage_offset,
+                        size: size,
+                        stride: stride,
+                        quantizer_params: quantizer_params,
+                        requires_grad:requires_grad,
+                        backward_hooks: backward_hooks
+                    };
+                };
                 functionTable['numpy.core.multiarray.scalar'] = function(dtype, rawData) {
-                    var data = rawData;
+                    let data = rawData;
                     if (rawData.constructor !== Uint8Array) {
                         data = new Uint8Array(rawData.length);
-                        for (var i = 0; i < rawData.length; i++) {
+                        for (let i = 0; i < rawData.length; i++) {
                             data[i] = rawData.charCodeAt(i);
                         }
                     }
-                    var dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
+                    let dataView = new DataView(data.buffer, data.byteOffset, data.byteLength);
                     switch (dtype.name) {
                         case 'float32':
                             return dataView.getFloat32(0, true);
@@ -370,7 +407,7 @@ pytorch.ModelFactory = class {
                         case 'int32':
                             return dataView.getInt32(0, true);
                         case 'int64':
-                            return new long.Long(dataView.getInt32(0, true), dataView.getInt32(4, true), true);
+                            return new long.Long(dataView.getInt32(0, true), dataView.getInt32(4, true), false);
                     }
                     throw new pytorch.Error("Unknown scalar type '" + dtype.name + "'.");
                 };
@@ -381,30 +418,34 @@ pytorch.ModelFactory = class {
                     return {};
                 };
 
-                var function_call = (name, args) => {
-                    var func = functionTable[name];
+                let unknownNameMap = new Set();
+                let knownPackageMap = new Set([ 'torch', 'torchvision', 'collections', '__builtin__', '_codecs', 'argparse', 'numpy' ]);
+
+                let function_call = (name, args) => {
+                    const func = functionTable[name];
                     if (func) {
                         return func.apply(null, args);
                     }
-                    var obj = { __type__: name };
-                    var constructor = constructorTable[name];
+                    const parts = name.split('.');
+                    let obj = {};
+                    obj.__name__ = parts.pop();
+                    obj.__module__ = parts.join('.');
+                    const constructor = constructorTable[obj.__module__ + '.' + obj.__name__];
                     if (constructor) {
                         constructor.apply(obj, args);
                     }
-                    else if (name) {
-                        var map =  {
-                            'torch': true, 'torchvision': true, 'collections': true, 
-                            '__builtin__': true, '_codecs': true, 'argparse': true, 'numpy': true };
-                        if (map[name.split('.').shift()]) {
+                    else if (name && !unknownNameMap.has(name)) {
+                        unknownNameMap.add(name);
+                        if (knownPackageMap.has(name.split('.').shift())) {
                             host.exception(new pytorch.Error("Unknown function '" + name + "' in '" + identifier + "'."), false);
                         }
                     }
                     return obj;
                 };
 
-                var persistent_load = (saved_id) => {
-                    var typename = saved_id.shift();
-                    var data = saved_id;
+                const persistent_load = (saved_id) => {
+                    const typename = saved_id.shift();
+                    const data = saved_id;
                     switch (typename) {
                         case 'module':
                             var module = data[0];
@@ -438,9 +479,8 @@ pytorch.ModelFactory = class {
                     throw new pytorch.Error("Unknown persistent load type '" + typename + "'.");
                 };
 
-                if (Array.isArray(magic_number) && signature.length == magic_number.length && signature.every((value, index) => value == magic_number[index])) 
-                {
-                    var protocol_version = unpickler.load();
+                if (Array.isArray(magic_number) && signature.length == magic_number.length && signature.every((value, index) => value == magic_number[index])) {
+                    const protocol_version = unpickler.load();
                     if (protocol_version != 1001) {
                         throw new pytorch.Error("Unsupported protocol version '" + protocol_version + "'.");
                     }
@@ -449,29 +489,31 @@ pytorch.ModelFactory = class {
                         throw new pytorch.Error("Unsupported protocol version '" + sys_info.protocol_version + "'.");
                     }
 
-                    var root = unpickler.load(function_call, persistent_load);
+                    const root = unpickler.load(function_call, persistent_load);
                     if (!root) {
-                        throw new pytorch.Error("File format is not PyTorch in '" + identifier + "'.");
+                        throw new pytorch.Error('File format is not PyTorch.');
                     }
 
-                    var deserialized_storage_keys = unpickler.load();
-                    for (var deserialized_storage_key of deserialized_storage_keys) {
+                    const deserialized_storage_keys = unpickler.load();
+                    for (let deserialized_storage_key of deserialized_storage_keys) {
                         storage = deserialized_objects[deserialized_storage_key];
-                        if (storage) {
-                            storage.data = unpickler.read(storage.dataTypeSize * storage.size);
+                        const size = long.Long.fromBytesLE(unpickler.read(8), false).toNumber();
+                        if (size != storage.size) {
+                            throw new pytorch.Error('Storage size mismatch.');
                         }
+                        storage.data = unpickler.read(storage.dataTypeSize * storage.size);
                     }
         
                     root_module = pytorch.ModelFactory._findRootModule(root);
                     if (!root_module) {
                         state_dict = pytorch.ModelFactory._findStateDict(root);
                         if (!state_dict) {
-                            throw new pytorch.Error("File does not contain root module or state dictionary in '" + identifier + "'.");
+                            throw new pytorch.Error('File does not contain root module or state dictionary.');
                         }
                     }
                 }
                 else {
-                    var legacyRoot = pytorch.ModelFactory._loadLegacyFormat(buffer);
+                    const legacyRoot = pytorch.ModelFactory._loadLegacyFormat(buffer);
                     if (!legacyRoot) {
                         throw new pytorch.Error('Invalid signature.');
                     } 
@@ -483,92 +525,66 @@ pytorch.ModelFactory = class {
                     }
 
                     unpickler = new pickle.Unpickler(legacyRoot.storages);
-                    var num_storages = unpickler.load();
-                    for (var i = 0; i < num_storages; i++) {
-                        var storage_args = unpickler.load();
-                        var storage_key = storage_args[0];
-                        var storage_type = storage_args[2];
-                        var size = long.Long.fromBytesLE(unpickler.read(8), false).toNumber();
+                    const num_storages = unpickler.load();
+                    for (let i = 0; i < num_storages; i++) {
+                        const storage_args = unpickler.load();
+                        const storage_key = storage_args[0];
+                        const storage_type = storage_args[2];
+                        const size = long.Long.fromBytesLE(unpickler.read(8), false).toNumber();
                         storage = function_call(storage_type, [ size ]);
                         storage.data = unpickler.read(storage.dataTypeSize * storage.size);
                         deserialized_objects[storage_key] = storage;
                     }
                     /*
-                    var storage_views = unpickler.load();
+                    let storage_views = unpickler.load();
                     for target_cdata, root_cdata, offset, size in storage_views:
                         root = deserialized_objects[root_cdata]
                         deserialized_objects[target_cdata] = root[offset:offset + size]
                     */
 
                     unpickler = new pickle.Unpickler(legacyRoot.tensors);
-                    var num_tensors = unpickler.load();
-                    for (var j = 0; j < num_tensors; j++) {
-                        var tensor_args = unpickler.load();
-                        var tensor_key = tensor_args[0];
-                        var storage_id = tensor_args[1];
+                    const num_tensors = unpickler.load();
+                    for (let j = 0; j < num_tensors; j++) {
+                        const tensor_args = unpickler.load();
+                        const tensor_key = tensor_args[0];
+                        const storage_id = tensor_args[1];
                         storage = deserialized_objects[storage_id];
-                        var ndim = long.Long.fromBytesLE(unpickler.read(4), false).toNumber();
+                        const ndim = long.Long.fromBytesLE(unpickler.read(4), false).toNumber();
                         unpickler.read(4);
-                        var shape = [];
-                        for (var k = 0; k < ndim; k++) {
+                        let shape = [];
+                        for (let k = 0; k < ndim; k++) {
                             shape.push(long.Long.fromBytesLE(unpickler.read(8), false).toNumber())
                         }
-                        var stride = [];
-                        for (var l = 0; l < ndim; l++) {
+                        let stride = [];
+                        for (let l = 0; l < ndim; l++) {
                             stride.push(long.Long.fromBytesLE(unpickler.read(8), false).toNumber())
                         }
-                        var storage_offset = long.Long.fromBytesLE(unpickler.read(8), false).toNumber();
-                        var tensor_type = storage.__type__.replace('Storage', 'Tensor');
-                        var tensor = function_call(tensor_type, []);
+                        const storage_offset = long.Long.fromBytesLE(unpickler.read(8), false).toNumber();
+                        const tensor_type_name = storage.__name__.replace('Storage', 'Tensor');
+                        const tensor = function_call(storage.__module__ + '.' + tensor_type_name, []);
                         tensor.__setstate__([ storage, storage_offset, shape, stride ]);
                         deserialized_objects[tensor_key] = tensor;
                     }
 
                     unpickler = new pickle.Unpickler(legacyRoot.pickle);
-                    var obj = unpickler.load(function_call, (saved_id) => {
+                    const obj = unpickler.load(function_call, (saved_id) => {
                         return deserialized_objects[saved_id];
                     });
 
                     root_module = null;
-                    state_dict = [];
-
-                    if (obj && !Array.isArray(obj)) {
-                        var array = [];
-                        for (var key of Object.keys(obj)) {
-                            array.push({ key: key, value: obj[key] });
-                        }
-                        obj = array;
-                    }
-                    if (obj && Array.isArray(obj)) {
-                        for (var item of obj) {
-                            var value = null;
-                            if (item && item.value && item.value.__type__ == 'torch.nn.parameter.Parameter') {
-                                value = item.value[0];
-                            }
-                            else if (item && item.value && 
-                                    item.value.__type__.startsWith('torch.') && 
-                                    item.value.__type__.endsWith('Tensor')) {
-                                value = item.value;
-                            }
-                            else {
-                                value = null;
-                            }
-                            state_dict.push({ key: item.key, value: value });
-                        }
-                    }
+                    state_dict = pytorch.ModelFactory._convertStateDictLegacyFormat(obj);
                 }
 
                 if (sys_info.type_sizes &&
                     ((sys_info.type_sizes.int && sys_info.type_sizes.int != 4) ||
                     (sys_info.type_sizes.long && sys_info.type_sizes.long != 4) ||
-                    (sys_info.type_sizes.short && sys_info.type_sizes.short != 2)))
-                {
+                    (sys_info.type_sizes.short && sys_info.type_sizes.short != 2))) {
                     throw new pytorch.Error('Unsupported type sizes.');
                 }
             }
             catch (error) {
                 host.exception(error, false);
-                var message = error && error.message ? error.message : error.toString();
+                let message = error && error.message ? error.message : error.toString();
                 message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
                 throw new pytorch.Error(message + " in '" + identifier + "'.");
             }
@@ -579,7 +595,7 @@ pytorch.ModelFactory = class {
                 }
                 catch (error) {
                     host.exception(error, false);
-                    var message = error && error.message ? error.message : error.toString();
+                    let message = error && error.message ? error.message : error.toString();
                     message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
                     throw new pytorch.Error(message + " in '" + identifier + "'.");
                 }
@@ -590,19 +606,19 @@ pytorch.ModelFactory = class {
     static _loadLegacyFormat(buffer) {
         try {
             if (buffer.length >= 512) {
-                var sum = 0;
-                for (var i = 0; i < 512; i++) {
+                let sum = 0;
+                for (let i = 0; i < 512; i++) {
                     sum += (i >= 148 && i < 156) ? 32 : buffer[i];
                 }
-                var checksum = '';
-                for (var j = 148; j < 156 && buffer[j] != 0; j++) {
+                let checksum = '';
+                for (let j = 148; j < 156 && buffer[j] != 0; j++) {
                     checksum += String.fromCharCode(buffer[j]);
                 }
                 checksum = parseInt(checksum, 8);
                 if (!isNaN(checksum) && sum == checksum) {
-                    var archive = new tar.Archive(buffer);
-                    var entries = {};
-                    for (var entry of archive.entries) {
+                    const archive = new tar.Archive(buffer);
+                    let entries = {};
+                    for (let entry of archive.entries) {
                         entries[entry.name] = entry.data;
                     }
                     if (entries.sys_info && entries.pickle && entries.storages && entries.tensors) {
@@ -618,8 +634,8 @@ pytorch.ModelFactory = class {
     }
 
     static _findRootModule(root) {
-        var candidates = [ root, root.model, root.net ];
-        for (var obj of candidates) {
+        const candidates = [ root, root.model, root.net ];
+        for (let obj of candidates) {
             if (obj && obj._modules) {
                 return obj;
             }
@@ -628,30 +644,215 @@ pytorch.ModelFactory = class {
     }
 
     static _findStateDict(root) {
-        var candidates = [ root, root.model, root.state, root.state_dict, root.model_state, root.params, root.generator, root.discriminator, root.network, root.netG ];
-        for (var dict of candidates) {
-            if (dict && Array.isArray(dict) && dict.__setitem__ &&
-                dict.every((item) => item.value.__type__ && item.value.__type__.startsWith('torch.') && item.value.__type__.endsWith('Tensor'))) {
-                delete dict.__setitem__;
-                return dict;
+        if (root) {
+            if (root.encoder && Array.isArray(root.encoder) && 
+                root.decoder && Array.isArray(root.decoder) && !root.state_dict) {
+                root = root.encoder.concat(root.decoder);
             }
-            if (dict && !Array.isArray(dict)) {
-                var match = true;
-                var array = [];
-                for (var key of Object.keys(dict)) {
-                    var value = dict[key]
-                    if (!key || !value || !value.__type__ || !value.__type__.startsWith('torch.') || !value.__type__.endsWith('Tensor')) {
-                        match = false;
-                        break;
-                    }
-                    array.push({ key: key, value: value });
+            if (Array.isArray(root) && root.every((item) => item.key && item.value)) {
+                let obj = {};
+                for (let item of root) {
+                    obj[item.key] = item.value;
                 }
-                if (match) {
-                    return array;
-                }
+                root = obj;
+            }
+        }
+        const candidates = [ 
+            root, root.state_dict, root.state,
+            root.model_state, root.model, root.model_state_dict, root.net_dict,
+            root.params, root.generator, root.discriminator, root.g_state,
+            root.network, root.net, root.netG,
+            root.state_dict_stylepredictor, root.state_dict_ghiasi
+        ];
+        for (let dict of candidates) {
+            const state_dict =
+                pytorch.ModelFactory._convertStateDictList(dict) ||
+                pytorch.ModelFactory._convertStateDictMap(dict) || 
+                pytorch.ModelFactory._convertStateDictGroupMap(dict);
+            if (state_dict) {
+                return state_dict;
             }
         }
         return null;
+    }
+
+    static _convertStateDictList(list) {
+        if (!list || !Array.isArray(list) || 
+            !list.every((item) => item && item.key && pytorch.ModelFactory._isTensor(item.value))) {
+            return null;
+        }
+        let state_dict = [];
+        let state_map = {};
+        for (let item of list) {
+            const split = item.key.split('.');
+            if (split.length < 2) {
+                return null;
+            }
+            let state = {};
+            state.id = item.key;
+            state.name = split.pop();
+            state.value = item.value;
+            const state_group_name = split.join('.');
+            let state_group = state_map[state_group_name];
+            if (!state_group) {
+                state_group = {};
+                state_group.name = state_group_name;
+                state_group.states = [];
+                state_map[state_group_name] = state_group;
+                state_dict.push(state_group);
+            }
+            state_group.states.push(state);
+        }
+        return state_dict;
+    }
+
+    static _convertStateDictMap(obj) {
+        if (!obj || Array.isArray(obj)) {
+            return null
+        }
+        let state_dict = [];
+        let state_map = {};
+        for (let key in obj) {
+            const split = key.split('.');
+            if (split.length < 1) {
+                return null;
+            }
+            let state = {};
+            state.id = key;
+            state.name = split.pop();
+            state.value = obj[key];
+            if (state.value && state.value.__module__ === 'torch.nn.parameter' && state.value.__name__ === 'Parameter') {
+                if (pytorch.ModelFactory._isTensor(state.value.data)) {
+                    state.value = state.value.data;
+                }
+            }
+            if (!pytorch.ModelFactory._isTensor(state.value)) {
+                return null;
+            }
+            const state_group_name = split.join('.');
+            let state_group = state_map[state_group_name];
+            if (!state_group) {
+                state_group = {};
+                state_group.name = state_group_name;
+                state_group.states = [];
+                state_map[state_group_name] = state_group;
+                state_dict.push(state_group);
+            }
+            state_group.states.push(state);
+        }
+        return state_dict;
+    }
+
+    static _convertStateDictGroupMap(obj) {
+        if (!obj || Array.isArray(obj)) {
+            return null;
+        }
+        let state_dict = [];
+        let state_map = {};
+        for (let state_group_name in obj) {
+
+            let state_group = state_map[state_group_name];
+            if (!state_group) {
+                state_group = {};
+                state_group.name = state_group_name;
+                state_group.states = [];
+                state_group.attributes = [];
+                state_map[state_group_name] = state_group;
+                state_dict.push(state_group);
+            }
+            const item = obj[state_group_name];
+            if (!item) {
+                return null;
+            }
+            if (Array.isArray(item)) {
+                for (let entry of item) {
+                    if (!entry || !entry.key || !entry.value || !pytorch.ModelFactory._isTensor(entry.value)) {
+                        return null;
+                    }
+                    state_group.states.push({
+                        id: state_group_name + '.' + entry.key,
+                        name: entry.key,
+                        value: entry.value
+                    });
+                }
+            }
+            else if (Object(item) === item) {
+                for (let key in item) {
+                    const value = item[key];
+                    if (pytorch.ModelFactory._isTensor(value)) {
+                        state_group.states.push({ name: key, value: value, id: state_group_name + '.' + key });
+                    }
+                    else if (value !== Object(value)) {
+                        state_group.attributes.push({ name: key, value: value });
+                    }
+                    else if (value && value.data && value.__module__ === 'torch.nn.parameter' && value.__name__ === 'Parameter') {
+                        state_group.states.push({ name: key, value: value.data, id: state_group_name + '.' + key });
+                    }
+                    else {
+                        return null;
+                    }
+                }
+            }
+            else {
+                return null;
+            }
+        }
+        return state_dict;
+    }
+
+
+    static _convertStateDictLegacyFormat(obj) {
+        if (!obj) {
+            return null;
+        }
+        if (obj && !Array.isArray(obj)) {
+            let array = [];
+            for (let key of Object.keys(obj)) {
+                array.push({ key: key, value: obj[key] });
+            }
+            obj = array;
+        }
+        let state_dict = [];
+        let state_map = {};
+        if (obj && Array.isArray(obj)) {
+            for (let item of obj) {
+                if (!item || !item.key || !item.value) {
+                    return null;
+                }
+                let state = {};
+                state.id = item.key;
+                state.value = null;
+                if (item.value && item.value.__module__ === 'torch.nn.parameter' && item.value.__name__ === 'Parameter') {
+                    state.value = item.value[0];
+                }
+                else if (pytorch.ModelFactory._isTensor(item.value)) {
+                    state.value = item.value;
+                }
+                if (!state.value) {
+                    return null;
+                }
+                const split = state.id.split('.');
+                if (split.length < 2) {
+                    return null;
+                }
+                state.name = split.pop();
+                const state_group_name = split.join('.');
+                let state_group = state_map[state_group_name];
+                if (!state_group) {
+                    state_group = {};
+                    state_group.name = state_group_name;
+                    state_group.states = [];
+                    state_map[state_group_name] = state_group;
+                    state_dict.push(state_group);
+                }
+                state_group.states.push(state);
+            }
+        }
+        return state_dict;
+    }
+
+    static _isTensor(obj) {
+        return obj && obj.__module__ === 'torch' && obj.__name__ && obj.__name__.endsWith('Tensor');
     }
 };
 
@@ -675,7 +876,7 @@ pytorch.Graph = class {
 
     constructor(metadata, sysInfo, root, state_dict, module_source_map) {
         this._metadata = metadata;
-        this._type = root ? root.__type__ : '';
+        this._type =  (root && root.__module__ && root.__name__) ? (root.__module__ + '.' + root.__name__) : '';
         this._nodes = [];
         this._inputs = [];
         this._outputs = [];
@@ -683,44 +884,32 @@ pytorch.Graph = class {
         this._littleEndian = sysInfo.little_endian;
 
         if (!state_dict) {
-            var input = 'data';
-            this._inputs.push(new pytorch.Argument(input, true, [ new pytorch.Connection(input, null, null) ]));
-            var outputs = this._loadModule(root, module_source_map, [], [ input ]);
-            for (var output of outputs) {
-                this._outputs.push(new pytorch.Argument(output, true, [ new pytorch.Connection(output, null, null) ]));
+            const input = 'data';
+            this._inputs.push(new pytorch.Parameter(input, true, [ new pytorch.Argument(input, null, null) ]));
+            const outputs = this._loadModule(root, module_source_map, [], [ input ]);
+            for (let output of outputs) {
+                this._outputs.push(new pytorch.Parameter(output, true, [ new pytorch.Argument(output, null, null) ]));
             }
-        } else {
-            var state_group_map = {};
-            var state_groups = [];
-            for (var state of state_dict) {
-                var key = state.key.split('.');
-                state.name = key.pop();
-                var id = key.join('.');
-                var state_group = state_group_map[id];
-                if (!state_group) {
-                    state_group = { id: id, states: [] };
-                    state_groups.push(state_group);
-                    state_group_map[id] = state_group;
-                }
-                state_group.states.push(state);
-            }
-            this._nodes = this._nodes.concat(state_groups.map((state_group) => {
-                var inputs = state_group.states.map((state) => {
-                    var tensor = new pytorch.Tensor(state.key, state.value, sysInfo.little_endian);
-                    var visible = state_group.states.length == 0 || tensor.type.toString() != 'int64' || tensor.value < 1000;
-                    return new pytorch.Argument(state.name, visible, [
-                        new pytorch.Connection(state.key, null, tensor)
+        }
+        else {
+            for (let state_group of state_dict) {
+                const attributes = state_group.attributes || [];
+                const inputs = state_group.states.map((state) => {
+                    const tensor = new pytorch.Tensor(state.id, state.value, sysInfo.little_endian);
+                    const visible = state_group.states.length == 0 || tensor.type.toString() != 'int64' || tensor.value < 1000;
+                    return new pytorch.Parameter(state.name, visible, [
+                        new pytorch.Argument(state.id, null, tensor)
                     ]);
                 });
-                return new pytorch.Node(this._metadata, '', state_group.id, { __type__: 'torch.nn.modules._.Module' }, inputs, []);
-            }));
+                this._nodes.push(new pytorch.Node(this._metadata, '', state_group.name, 'torch.nn.modules._', 'Module', attributes, inputs, []));
+            }
         }
     }
 
     _loadModule(parent, module_source_map, groups, inputs) {
 
-        if (parent.__type__ &&
-            !parent.__type__.startsWith('torch.nn.modules.container.') &&
+        if (parent.__module__ &&
+            !parent.__module__ === 'torch.nn.modules.container' &&
             (!parent._modules || parent._modules.length == 0)) {
             this._createNode(groups, '', parent, inputs);
             return [];
@@ -730,56 +919,59 @@ pytorch.Graph = class {
             throw new pytorch.Error('Module does not contain modules.');
         }
 
-        for (var module of parent._modules) {
-            var node;
-            switch (module.value.__type__) {
-                case 'torch.nn.modules.container.Sequential':
-                    groups.push(module.key);
-                    inputs = this._loadModule(module.value, module_source_map, groups, inputs);
-                    groups.pop(module.key);
-                    break;
-                case 'torchvision.models.densenet._Transition':
-                case 'torchvision.models.resnet.Bottleneck':
-                case 'torchvision.models.densenet._DenseBlock':
-                case 'torchvision.models.densenet._DenseLayer':
-                case 'torchvision.models.inception.BasicConv2d':
-                case 'torchvision.models.inception.InceptionAux':
-                case 'torchvision.models.inception.InceptionA':
-                case 'torchvision.models.inception.InceptionB':
-                case 'torchvision.models.inception.InceptionC':
-                case 'torchvision.models.inception.InceptionD':
-                case 'torchvision.models.inception.InceptionE':
-                    groups.push(module.key);
-                    node = this._createNode(groups, module.key, module.value, inputs, this._littleEndian);
-                    inputs = [ node.name ];
-                    groups.pop(module.key);
-                    break; 
-                default:
-                    node = this._createNode(groups, module.key, module.value, inputs);
-                    inputs = [ node.name ];
-                    break;
+        for (let module of parent._modules) {
+            if (module && module.value) {
+                const type = module.value.__module__ + '.' + module.value.__name__;
+                switch (type) {
+                    case 'torch.nn.modules.container.Sequential':
+                        groups.push(module.key);
+                        inputs = this._loadModule(module.value, module_source_map, groups, inputs);
+                        groups.pop(module.key);
+                        break;
+                    case 'torchvision.models.densenet._Transition':
+                    case 'torchvision.models.resnet.Bottleneck':
+                    case 'torchvision.models.densenet._DenseBlock':
+                    case 'torchvision.models.densenet._DenseLayer':
+                    case 'torchvision.models.inception.BasicConv2d':
+                    case 'torchvision.models.inception.InceptionAux':
+                    case 'torchvision.models.inception.InceptionA':
+                    case 'torchvision.models.inception.InceptionB':
+                    case 'torchvision.models.inception.InceptionC':
+                    case 'torchvision.models.inception.InceptionD':
+                    case 'torchvision.models.inception.InceptionE': {
+                        groups.push(module.key);
+                        const node = this._createNode(groups, module.key, module.value, inputs, this._littleEndian);
+                        inputs = [ node.name ];
+                        groups.pop(module.key);
+                        break; 
+                    }
+                    default: {
+                        const node = this._createNode(groups, module.key, module.value, inputs);
+                        inputs = [ node.name ];
+                        break;
+                    }
+                }
             }
         }
-
         return inputs;
     }
 
-    _createNode(groups, key, obj, connections) {
+    _createNode(groups, key, obj, args) {
 
-        var operator = obj.__type__.split('.').pop();
-        var schema = this._metadata.getSchema(operator);
+        const operator = obj.__name__;
+        const schema = this._metadata.getSchema(operator);
 
-        var inputSchema = [ { name: 'input'} ];
+        let inputSchema = [ { name: 'input'} ];
         if (schema && schema.inputs && schema.inputs.length > 0) {
             inputSchema = schema.inputs.slice();
         }
 
-        var inputs = [];
-        inputs.push(new pytorch.Argument(inputSchema.shift().name, true, connections.map((connection) => {
-            return new pytorch.Connection(connection, null, null);
+        let inputs = [];
+        inputs.push(new pytorch.Parameter(inputSchema.shift().name, true, args.map((argument) => {
+            return new pytorch.Argument(argument, null, null);
         })));
 
-        var parameters = [];
+        let parameters = [];
         if (obj._parameters) {
             parameters = parameters.concat(obj._parameters);
         }
@@ -787,32 +979,39 @@ pytorch.Graph = class {
             parameters = parameters.concat(obj._buffers);
         }
 
-        for (var parameter of parameters) {
-            var visible = true;
-            var inputName = ''; 
+        for (let parameter of parameters) {
+            let visible = true;
+            let inputName = ''; 
             if (inputSchema.length > 0) {
-                var input = inputSchema.shift();
+                const input = inputSchema.shift();
                 inputName = input.name;
                 visible = input.visible === false ? false : true;
             }
             if (parameter && parameter.value && (parameter.value.data || parameter.value.storage)) {
-                var initializer = null;
+                let initializer = null;
                 if (parameter.value.data) {
                     initializer = new pytorch.Tensor('', parameter.value.data, this._littleEndian);
                 }
                 else if (parameter.value.storage) {
                     initializer = new pytorch.Tensor('', parameter.value, this._littleEndian);
                 }
-                inputs.push(new pytorch.Argument(inputName || parameter.key, visible, [ new pytorch.Connection('', null, initializer) ]));
+                inputs.push(new pytorch.Parameter(inputName || parameter.key, visible, [ new pytorch.Argument('', null, initializer) ]));
             }
         }
 
-        var group = groups.join('/');
-        var name = group ? (group + '/' + key) : key;
+        const group = groups.join('/');
+        const name = group ? (group + '/' + key) : key;
 
-        var outputs = [ new pytorch.Argument('output', true, [ new pytorch.Connection(name, null, null) ]) ];
+        const outputs = [ new pytorch.Parameter('output', true, [ new pytorch.Argument(name, null, null) ]) ];
 
-        var node = new pytorch.Node(this._metadata, group, name, obj, inputs, outputs);
+        let attributes = [];
+        for (let name of Object.keys(obj)) {
+            if (!name.startsWith('_')) {
+                attributes.push({ name: name, value: obj[name] });
+            }
+        }
+
+        const node = new pytorch.Node(this._metadata, group, name, obj.__module__, obj.__name__, attributes, inputs, outputs);
         this._nodes.push(node);
         return node;
     }
@@ -838,12 +1037,12 @@ pytorch.Graph = class {
     }
 };
 
-pytorch.Argument = class {
+pytorch.Parameter = class {
 
-    constructor(name, visible, connections) {
+    constructor(name, visible, args) {
         this._name = name;
         this._visible = visible;
-        this._connections = connections;
+        this._arguments = args;
     }
 
     get name() {
@@ -854,12 +1053,12 @@ pytorch.Argument = class {
         return this._visible;
     }
 
-    get connections() {
-        return this._connections;
+    get arguments() {
+        return this._arguments;
     }
 };
 
-pytorch.Connection = class {
+pytorch.Argument = class {
 
     constructor(id, type, initializer) {
         this._id = id;
@@ -885,22 +1084,15 @@ pytorch.Connection = class {
 
 pytorch.Node = class {
 
-    constructor(metadata, group, name, obj, inputs, outputs) {
+    constructor(metadata, group, name, __module__, __name__, attributes, inputs, outputs) {
         this._metadata = metadata;
         this._group = group || '';
         this._name = name || '';
-        var type = obj.__type__.split('.');
-        this._operator = type.pop();
-        this._package = type.join('.');
-        this._attributes = [];
+        this._operator = __name__;
+        this._package = __module__;
+        this._attributes = attributes.map((attribute) => new pytorch.Attribute(this._metadata, this, attribute.name, attribute.value));
         this._inputs = inputs;
         this._outputs = outputs;
-
-        for (var attributeName of Object.keys(obj)) {
-            if (!attributeName.startsWith('_')) {
-                this._attributes.push(new pytorch.Attribute(this._metadata, this, attributeName, obj[attributeName]));
-            }
-        }
     }
 
     get name() {
@@ -916,12 +1108,12 @@ pytorch.Node = class {
     }
 
     get category() {
-        var schema = this._metadata.getSchema(this._operator);
+        const schema = this._metadata.getSchema(this._operator);
         return (schema && schema.category) ? schema.category : '';
     }
 
     get documentation() {
-        var schema = this._metadata.getSchema(this._operator);
+        let schema = this._metadata.getSchema(this._operator);
         if (schema) {
             schema = JSON.parse(JSON.stringify(schema));
             schema.name = this._operator;
@@ -929,21 +1121,21 @@ pytorch.Node = class {
                 schema.description = marked(schema.description);
             }
             if (schema.attributes) {
-                for (var attribute of schema.attributes) {
+                for (let attribute of schema.attributes) {
                     if (attribute.description) {
                         attribute.description = marked(attribute.description);
                     }
                 }
             }
             if (schema.inputs) {
-                for (var input of schema.inputs) {
+                for (let input of schema.inputs) {
                     if (input.description) {
                         input.description = marked(input.description);
                     }
                 }
             }
             if (schema.outputs) {
-                for (var output of schema.outputs) {
+                for (let output of schema.outputs) {
                     if (output.description) {
                         output.description = marked(output.description);
                     }
@@ -978,7 +1170,7 @@ pytorch.Attribute = class {
         this._name = name;
         this._value = value;
 
-        var schema = metadata.getAttributeSchema(this._node.operator, this._name);
+        const schema = metadata.getAttributeSchema(this._node.operator, this._name);
         if (schema) {
             if (Object.prototype.hasOwnProperty.call(schema, 'visible') && !schema.visible) {
                 this._visible = false;
@@ -990,7 +1182,7 @@ pytorch.Attribute = class {
             }
         }
 
-        if (Array.isArray(value) && value.every((obj) => obj.__type__ && obj.__type__.startsWith('torch.nn'))) {
+        if (Array.isArray(value) && value.every((obj) => obj.__module__ && obj.__module__.startsWith('torch.nn'))) {
             this._value = '?';
         }
     }
@@ -1034,7 +1226,7 @@ pytorch.Tensor = class {
     }
 
     get value() {
-        var context = this._context();
+        let context = this._context();
         if (context.state) {
             return null;
         }
@@ -1043,17 +1235,17 @@ pytorch.Tensor = class {
     }
 
     toString() {
-        var context = this._context();
+        let context = this._context();
         if (context.state) {
             return '';
         }
         context.limit = 10000;
-        var value = this._decode(context, 0);
+        const value = this._decode(context, 0);
         return pytorch.Tensor._stringify(value, '', '    ');
     }
 
     _context() {
-        var context = {};
+        let context = {};
         context.state = null;
         context.index = 0;
         context.count = 0;
@@ -1079,25 +1271,22 @@ pytorch.Tensor = class {
     }
 
     _decode(context, dimension) {
-        var results = [];
-        var dimensions = context.dimensions;
-        if (dimensions.length == 0) {
-            dimensions = [ 1 ];
-        }
-        var size = dimensions[dimension];
+        let results = [];
+        const dimensions = (context.dimensions.length == 0) ? [ 1 ] : context.dimensions;
+        const size = dimensions[dimension];
         if (dimension == dimensions.length - 1) {
-            for (var i = 0; i < size; i++) {
+            for (let i = 0; i < size; i++) {
                 if (context.count > context.limit) {
                     results.push('...');
                     return results;
                 }
-                switch (context.dataType)
-                {
+                switch (context.dataType) {
                     case 'uint8':
                         results.push(context.dataView.getUint8(context.index, this._littleEndian));
                         context.index++;
                         context.count++;
                         break;
+                    case 'qint8':
                     case 'int8':
                         results.push(context.dataView.getInt8(context.index, this._littleEndian));
                         context.index++;
@@ -1114,7 +1303,7 @@ pytorch.Tensor = class {
                         context.count++;
                         break;
                     case 'int64':
-                        results.push(new long.Long(context.dataView.getUint32(context.index, true), context.dataView.getUint32(context.index + 4, true), true));
+                        results.push(new long.Long(context.dataView.getUint32(context.index, true), context.dataView.getUint32(context.index + 4, true), false));
                         context.index += 8;
                         context.count++;
                         break;
@@ -1137,7 +1326,7 @@ pytorch.Tensor = class {
             }
         }
         else {
-            for (var j = 0; j < size; j++) {
+            for (let j = 0; j < size; j++) {
                 if (context.count > context.limit) {
                     results.push('...');
                     return results;
@@ -1153,9 +1342,9 @@ pytorch.Tensor = class {
 
     static _stringify(value, indentation, indent) {
         if (Array.isArray(value)) {
-            var result = [];
+            let result = [];
             result.push(indentation + '[');
-            var items = value.map((item) => pytorch.Tensor._stringify(item, indentation + indent, indent));
+            const items = value.map((item) => pytorch.Tensor._stringify(item, indentation + indent, indent));
             if (items.length > 0) {
                 result.push(items.join(',\n'));
             }
@@ -1240,9 +1429,9 @@ pytorch.Metadata = class {
         this._map = {};
         this._attributeCache = {};
         if (data) {
-            var items = JSON.parse(data);
+            const items = JSON.parse(data);
             if (items) {
-                for (var item of items) {
+                for (let item of items) {
                     if (item.name && item.schema) {
                         this._map[item.name] = item.schema;
                     }
@@ -1256,12 +1445,12 @@ pytorch.Metadata = class {
     }
 
     getAttributeSchema(operator, name) {
-        var map = this._attributeCache[operator];
+        let map = this._attributeCache[operator];
         if (!map) {
             map = {};
-            var schema = this.getSchema(operator);
+            const schema = this.getSchema(operator);
             if (schema && schema.attributes && schema.attributes.length > 0) {
-                for (var attribute of schema.attributes) {
+                for (let attribute of schema.attributes) {
                     map[attribute.name] = attribute;
                 }
             }

@@ -85,17 +85,17 @@ host.BrowserHost = class {
         this._menu.add({});
         this._menu.add({
             label: 'Zoom In',
-            accelerator: 'CmdOrCtrl+Up',
+            accelerator: 'Shift+Up',
             click: () => this.document.getElementById('zoom-in-button').click()
         });
         this._menu.add({
             label: 'Zoom Out',
-            accelerator: 'CmdOrCtrl+Down',
+            accelerator: 'Shift+Down',
             click: () => this.document.getElementById('zoom-out-button').click()
         });
         this._menu.add({
             label: 'Actual Size',
-            accelerator: 'CmdOrCtrl+Backspace',
+            accelerator: 'Shift+Backspace',
             click: () => this._view.resetZoom()
         });
         this._menu.add({});
@@ -132,31 +132,36 @@ host.BrowserHost = class {
         }
 
         this._view.show('Welcome');
-        var openFileButton = document.getElementById('open-file-button');
-        var openFileDialog = document.getElementById('open-file-dialog');
+        var openFileButton = this.document.getElementById('open-file-button');
+        var openFileDialog = this.document.getElementById('open-file-dialog');
         if (openFileButton && openFileDialog) {
             openFileButton.addEventListener('click', () => {
                 openFileDialog.value = '';
                 openFileDialog.click();
             });
             openFileDialog.addEventListener('change', (e) => {
-                if (e.target && e.target.files && e.target.files.length == 1) {
-                    this._openFile(e.target.files[0]);
+                if (e.target && e.target.files && e.target.files.length > 0) {
+                    var files = Array.from(e.target.files);
+                    var file = files.find((file) => this._view.accept(file.name));
+                    if (file) {
+                        this._open(file, files);
+                    }
                 }
             });
         }
-        document.addEventListener('dragover', (e) => {
+        this.document.addEventListener('dragover', (e) => {
             e.preventDefault();
         });
-        document.addEventListener('drop', (e) => {
+        this.document.addEventListener('drop', (e) => {
             e.preventDefault();
         });
-        document.body.addEventListener('drop', (e) => { 
+        this.document.body.addEventListener('drop', (e) => { 
             e.preventDefault();
-            if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length == 1) {
-                var file = e.dataTransfer.files[0];
-                if (file.name.split('.').length > 1 && this._view.accept(file.name)) {
-                    this._openFile(file);
+            if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                var files = Array.from(e.dataTransfer.files);
+                var file = files.find((file) => this._view.accept(file.name));
+                if (file) {
+                    this._open(file, files);
                 }
             }
         });
@@ -199,7 +204,7 @@ host.BrowserHost = class {
                 delete window.module;
                 reject(new Error('The script \'' + e.target.src + '\' failed to load.'));
             };
-            document.head.appendChild(script);
+            this.document.head.appendChild(script);
         });
     }
 
@@ -208,12 +213,12 @@ host.BrowserHost = class {
     }
 
     export(file, blob) {
-        var element = document.createElement('a');
+        var element = this.document.createElement('a');
         element.download = file;
         element.href = URL.createObjectURL(blob);
-        document.body.appendChild(element);
+        this.document.body.appendChild(element);
         element.click();
-        document.body.removeChild(element);
+        this.document.body.removeChild(element);
     }
 
     request(base, file, encoding) {
@@ -248,17 +253,17 @@ host.BrowserHost = class {
         window.open(url, '_target');
     }
 
-    exception(err, fatal) {
-        if (window.ga && this.version && this.version !== '0.0.0') {
+    exception(error, fatal) {
+        if (window.ga && this.version && this.version !== '0.0.0' && error && error.telemetry !== false) {
             var description = [];
-            description.push((err && err.name ? (err.name + ': ') : '') + (err && err.message ? err.message : '(null)'));
-            if (err.stack) {
-                var match = err.stack.match(/\n {4}at (.*)\((.*)\)/);
+            description.push((error && error.name ? (error.name + ': ') : '') + (error && error.message ? error.message : '(null)'));
+            if (error.stack) {
+                var match = error.stack.match(/\n {4}at (.*)\((.*)\)/);
                 if (match) {
                     description.push(match[1] + '(' + match[2].split('/').pop() + ')');
                 }
                 else {
-                    description.push(err.stack.split('\n').shift());
+                    description.push(error.stack.split('\n').shift());
                 }
             }
             window.ga('send', 'exception', {
@@ -331,7 +336,7 @@ host.BrowserHost = class {
                 var buffer = new Uint8Array(request.response);
                 var context = new BrowserContext(this, url, identifier, buffer);
                 this._view.open(context).then(() => {
-                    document.title = identifier || url.split('/').pop();
+                    this.document.title = identifier || url.split('/').pop();
                 }).catch((error) => {
                     if (error) {
                         this.exception(error, false);
@@ -350,11 +355,15 @@ host.BrowserHost = class {
         request.send();
     }
 
-    _openFile(file) {
+    _open(file, files) {
         this._view.show('Spinner');
-        this._openBuffer(file).then(() => {
-            this._view.show(null);
-            document.title = file.name;
+        var context = new BrowserFileContext(file, files);
+        context.open().then(() => {
+            return this._view.open(context).then((model) => {
+                this._view.show(null);
+                this.document.title = files[0].name;
+                return model;
+            });
         }).catch((error) => {
             this._view.show(null);
             this.exception(error, false);
@@ -391,7 +400,7 @@ host.BrowserHost = class {
             }
             var context = new BrowserContext(this, '', identifier, buffer);
             this._view.open(context).then(() => {
-                document.title = identifier;
+                this.document.title = identifier;
             }).catch((error) => {
                 if (error) {
                     this.exception(error, false);
@@ -404,40 +413,6 @@ host.BrowserHost = class {
         };
         request.open('GET', url, true);
         request.send();
-    }
-
-    _openBuffer(file) {
-        return new Promise((resolve, reject) => {
-            var reader = new FileReader();
-            reader.onload = (e) => {
-                resolve(new Uint8Array(e.target.result));
-            };
-            reader.onerror = (e) => {
-                e = e || window.event;
-                var message = '';
-                switch(e.target.error.code) {
-                    case e.target.error.NOT_FOUND_ERR:
-                        message = 'File not found.';
-                        break;
-                    case e.target.error.NOT_READABLE_ERR:
-                        message = 'File not readable.';
-                        break;
-                    case e.target.error.SECURITY_ERR:
-                        message = 'File access denied.';
-                        break;
-                    default:
-                        message = "File read error '" + e.target.error.code.toString() + "'.";
-                        break;
-                }
-                reject(new Error(message));
-            };
-            reader.readAsArrayBuffer(file);
-        }).then((buffer => {
-            var context = new BrowserContext(this, '', file.name, buffer);
-            return this._view.open(context).then((model) => {
-                return model;
-            })
-        }));
     }
 };
 
@@ -453,8 +428,7 @@ if (typeof TextDecoder === "undefined") {
             case 'utf-8':
                 while (i < length) {
                     var c = buffer[i++];
-                    switch(c >> 4)
-                    { 
+                    switch(c >> 4) {
                         case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
                             result += String.fromCharCode(c);
                             break;
@@ -506,17 +480,20 @@ if (typeof TextEncoder === "undefined") {
                         resArr[resPos += 1] = (0x2<<6) | (point&0x3f);
                         continue;
                     }
-                } else {
+                }
+                else {
                     resArr[resPos += 1] = 0xef; resArr[resPos += 1] = 0xbf;
                     resArr[resPos += 1] = 0xbd; continue;
                 }
             }
             if (point <= 0x007f) {
                 resArr[resPos += 1] = (0x0<<7) | point;
-            } else if (point <= 0x07ff) {
+            }
+            else if (point <= 0x07ff) {
                 resArr[resPos += 1] = (0x6<<5) | (point>>>6);
                 resArr[resPos += 1] = (0x2<<6) | (point&0x3f);
-            } else {
+            }
+            else {
                 resArr[resPos += 1] = (0xe<<4) | (point>>>12);
                 resArr[resPos += 1] = (0x2<<6) | ((point>>>6)&0x3f);
                 resArr[resPos += 1] = (0x2<<6) | (point&0x3f);
@@ -591,7 +568,7 @@ host.Dropdown = class {
                 e.preventDefault();
             }
         });
-        document.body.addEventListener('click', (e) => {
+        this._document.body.addEventListener('click', (e) => {
             if (!this._button.contains(e.target)) {
                 this.close();
             }
@@ -691,6 +668,70 @@ host.Dropdown = class {
 
     close() {
         this._dropdown.style.display = 'none';
+    }
+}
+
+
+class BrowserFileContext {
+
+    constructor(file, blobs) {
+        this._file = file;
+        this._blobs = {};
+        for (var blob of blobs) {
+            this._blobs[blob.name] = blob;
+        }
+    }
+
+    get identifier() {
+        return this._file.name;
+    }
+
+    get buffer() {
+        return this._buffer;
+    }
+
+    open() {
+        return this.request(this._file.name, null).then((data) => {
+            this._buffer = data;
+        });
+    }
+
+    request(file, encoding) {
+        var blob = this._blobs[file];
+        if (!blob) {
+            return Promise.reject(new Error("File not found '" + file + "'."));
+        }
+        return new Promise((resolve, reject) => {
+            var reader = new FileReader();
+            reader.onload = (e) => {
+                resolve(encoding ? e.target.result : new Uint8Array(e.target.result));
+            };
+            reader.onerror = (e) => {
+                e = e || window.event;
+                var message = '';
+                switch(e.target.error.code) {
+                    case e.target.error.NOT_FOUND_ERR:
+                        message = "File not found '" + file + "'.";
+                        break;
+                    case e.target.error.NOT_READABLE_ERR:
+                        message = "File not readable '" + file + "'.";
+                        break;
+                    case e.target.error.SECURITY_ERR:
+                        message = "File access denied '" + file + "'.";
+                        break;
+                    default:
+                        message = "File read '" + e.target.error.code.toString() + "' error '" + file + "'.";
+                        break;
+                }
+                reject(new Error(message));
+            };
+            if (encoding === 'utf-8') {
+                reader.readAsText(blob, encoding);
+            }
+            else {
+                reader.readAsArrayBuffer(blob);
+            }
+        });
     }
 }
 

@@ -21,12 +21,19 @@ reset:
 
 update:
 	@[ -d node_modules ] || npm install
+	@./tools/armnn sync install schema
+	@./tools/bigdl sync schema
 	@./tools/caffe sync schema
 	@./tools/coreml sync install schema
+	@./tools/chainer sync
 	@./tools/cntk sync schema
 	@./tools/darknet sync
+	@./tools/dl4j sync
 	@./tools/keras sync install metadata
+	@./tools/mnn sync install schema
+	@./tools/mlnet sync metadata
 	@./tools/mxnet sync metadata
+	@./tools/ncnn sync
 	@./tools/onnx sync install schema metadata
 	@./tools/paddle sync schema
 	@./tools/pytorch sync install schema metadata
@@ -42,7 +49,11 @@ build_python:
 build_electron:
 	@[ -d node_modules ] || npm install
 	npx electron-builder install-app-deps
-	npx electron-builder --mac --linux --win
+	npx electron-builder --mac
+	npx electron-builder --win
+	npx electron-builder --linux deb
+	npx electron-builder --linux appimage
+	npx electron-builder --linux snap
 
 lint:
 	@[ -d node_modules ] || npm install
@@ -66,7 +77,11 @@ publish_python:
 publish_github_electron:
 	@[ -d node_modules ] || npm install
 	npx electron-builder install-app-deps
-	npx electron-builder --mac --linux --win --publish always
+	npx electron-builder --mac --publish always
+	npx electron-builder --win --publish always
+	npx electron-builder --linux deb --publish always
+	npx electron-builder --linux appimage --publish always
+	npx electron-builder --linux snap --publish always
 
 publish_github_pages:
 	@[ -d node_modules ] || npm install

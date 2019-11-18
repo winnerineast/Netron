@@ -12,74 +12,61 @@ var zip = zip || require('./zip');
 torchscript.ModelFactory = class {
 
     match(context) {
-        var identifier = context.identifier; 
-        var extension = identifier.split('.').pop().toLowerCase();
-        if (extension == 'pt' || extension == 'pth' || extension == 'pkl' || extension == 'h5' || extension == 't7' ||
+        const identifier = context.identifier; 
+        const extension = identifier.split('.').pop().toLowerCase();
+        if (extension == 'pt' || extension == 'pt1' || extension == 'pth' || extension == 'pkl' || extension == 'h5' || extension == 't7' ||
             extension == 'dms' || extension == 'model' || extension == 'ckpt' || identifier.endsWith('.pth.tar')) {
-            if (torchscript.ModelFactory._openContainer(context.buffer)) {
-                return true;
+            const entries = context.entries;
+            if (entries && entries.length > 0) {
+                const versionEntry = entries.find((entry) => entry.name == 'version' || entry.name.endsWith('/version'));
+                if (versionEntry) {
+                    const prefix = versionEntry.name.substring(0, versionEntry.name.length - 7);
+                    if (entries.some((entry) => entry.name == prefix + 'model.json') ||
+                        entries.some((entry) => entry.name == prefix + 'data.pkl')) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
     }
 
     open(context, host) {
-        var identifier = context.identifier;
-        try {
-            var container = torchscript.ModelFactory._openContainer(context.buffer);
-            return torchscript.Metadata.open(host).then((metadata) => {
+        return host.require('./python').then((python) => {
+            return host.require('./pickle').then((pickle) => {
+                const identifier = context.identifier;
                 try {
-                    return new torchscript.Model(metadata, container);
+                    let container = new torchscript.Container(context.identifier, context.entries, python, pickle);
+                    return torchscript.Metadata.open(host).then((metadata) => {
+                        try {
+                            return new torchscript.Model(metadata, host, container);
+                        }
+                        catch (error) {
+                            host.exception(error, false);
+                            let message = error && error.message ? error.message : error.toString();
+                            message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
+                            throw new torchscript.Error(message + " in '" + identifier + "'.");
+                        }
+                    });
                 }
                 catch (error) {
                     host.exception(error, false);
-                    var message = error && error.message ? error.message : error.toString();
+                    let message = error && error.message ? error.message : error.toString();
                     message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
-                    throw new torchscript.Error(message + " in '" + identifier + "'.");
+                    return Promise.reject(new torchscript.Error(message + " in '" + identifier + "'."));
                 }
             });
-        }
-        catch (error) {
-            host.exception(error, false);
-            var message = error && error.message ? error.message : error.toString();
-            message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
-            return Promise.reject(new torchscript.Error(message + " in '" + identifier + "'."));
-        }
-    }
-
-    static _openContainer(buffer) {
-        if (buffer && buffer.length > 2 && buffer[0] == 0x50 && buffer[1] == 0x4B) {
-            var archive = new zip.Archive(buffer);
-            var container = { };
-            container.version = archive.entries.find((entry) => entry.name == 'version' || entry.name.endsWith('/version'));
-            if (container.version) {
-                container.prefix = container.version.name.substring(0, container.version.name.length - 7);
-                container.model = archive.entries.find((entry) => entry.name == container.prefix + 'model.json');
-                container.entries = archive.entries;
-                if (container.version && container.model) {
-                    return container;
-                }
-            }
-        }
-        return null;
+        });
     }
 };
 
 torchscript.Model = class { 
 
-    constructor(metadata, container) {
-        var textDecoder = new TextDecoder('utf-8');
-        var model = JSON.parse(textDecoder.decode(container.model.data));
-        var version = JSON.parse(textDecoder.decode(container.version.data));
-        this._format = 'TorchScript v' + version.toString();
-        if (model.producerName) {
-            this._producer = model.producerName;
-            if (model.producerVersion) {
-                this._producer = this._producer + ' v' + model.producerVersion;
-            }
-        }
+    constructor(metadata, host, container) {
+        this._format = 'TorchScript v' + container.version.toString();
+        this._producer = container.producer || '';
         this._graphs = [];
-        this._graphs.push(new torchscript.Graph(metadata, container, model.mainModule, model.tensors));
+        this._graphs.push(new torchscript.Graph(metadata, host, container));
     }
 
     get format() {
@@ -97,67 +84,115 @@ torchscript.Model = class {
 
 torchscript.Graph = class {
 
-    constructor(metadata, container, mainModule, tensors) {
-        this._name = mainModule.name;
+    constructor(metadata, host, container) {
         this._inputs = [];
         this._outputs = [];
         this._nodes = [];
 
-        container.tensors = tensors.map((tensor) => new torchscript.Tensor(tensor, container));
+        this._name = container.name;
 
-        var context = new torchscript.GraphContext(container, mainModule);
+        let context = null;
+        try {
+            context = new torchscript.GraphContext(container);
+        }
+        catch (error) {
+            let message = error && error.message ? error.message : error.toString();
+            message = message.endsWith('.') ? message.substring(0, message.length - 1) : message;
+            host.exception(new torchscript.Error(message + " in '" + container.identifier + "'."), false);
+        }
 
         container.parameters = {};
-        var queue = [ mainModule ];
-        while (queue.length > 0) {
-            var module = queue.shift();
-            if (module.parameters) {
-                for (var parameter of module.parameters) {
-                    if (parameter.tensorId) {
-                        var tensorId = parseInt(parameter.tensorId, 10);
-                        parameter.initializer = container.tensors[tensorId];
-                        if (parameter.outputs && parameter.outputs.length == 1) {
-                            container.parameters[parameter.outputs[0]] = parameter;
+        if (container.data) {
+            let queue = [ container.data ];
+            while (queue.length > 0) {
+                let module = queue.shift();
+                for (let key of Object.keys(module)) {
+                    if (key !== '__type__' && key !== '__parent__') {
+                        let obj = module[key];
+                        if (!Array.isArray(obj) && obj === Object(obj)) {
+                            if (torchscript.Utility.isTensor(obj)) {
+                                let parameter = obj;
+                                if (!parameter.initializer) {
+                                    parameter.initializer = new torchscript.Tensor(parameter);
+                                }
+                                if (parameter.__outputs__ && parameter.__outputs__.length == 1) {
+                                    container.parameters[parameter.__outputs__[0]] = parameter;
+                                }
+                            }
+                            else if (obj && obj.__type__) {
+                                obj.__parent__ = module;
+                                if (!obj.__name__) {
+                                    obj.__name__ = key;
+                                }
+                                queue.push(obj);
+                            }
                         }
                     }
                 }
             }
-            if (module.submodules) {
-                for (var submodule of module.submodules) {
-                    submodule.parent = module;
-                    queue.push(submodule);
-                }
+        }
+
+        if (context) {
+            for (let input of context.inputs) {
+                this._inputs.push(new torchscript.Parameter(input, true, [
+                    new torchscript.Argument(input, null, null)
+                ]));
+            }
+            for (let output of context.outputs) {
+                this._outputs.push(new torchscript.Parameter(output, true, [
+                    new torchscript.Argument(output, null, null)
+                ]));
+            }
+            for (let node of context.nodes) {
+                this._nodes.push(new torchscript.Node(metadata, container, null, node));
             }
         }
 
-        for (var input of context.inputs) {
-            this._inputs.push(new torchscript.Argument(input, true, [
-                new torchscript.Connection(input, null, null)
-            ]));
+        if (container.data) {
+            this._loadModule(metadata, container, container.data);
         }
-        for (var output of context.outputs) {
-            this._outputs.push(new torchscript.Argument(output, true, [
-                new torchscript.Connection(output, null, null)
-            ]));
-        }
-
-        for (var node of context.nodes) {
-            this._nodes.push(new torchscript.Node(metadata, container, null, node));
-        }
-
-        this._loadModule(metadata, container, mainModule);
     }
 
     _loadModule(metadata, container, module) {
-        if (module.parameters && module.parameters.length > 0 && !module.hide) {
-            var node = new torchscript.Node(metadata, container, module, null);
-            this._nodes.push(node);
-        }
-        if (module.submodules) {
-            for (var submodule of module.submodules) {
+        if (module) {
+            if (torchscript.Graph._getParameters(module).length > 0 && !module.__hide__) {
+                let node = new torchscript.Node(metadata, container, module, null);
+                this._nodes.push(node);
+            }
+            let submodules = torchscript.Graph._getSubmodules(module);
+            for (let submodule of submodules) {
                 this._loadModule(metadata, container, submodule);
             }
         }
+    }
+
+    static _getParameters(module) {
+        let parameters = [];
+        if (module && module.__type__) {
+            for (let key of Object.keys(module)) {
+                if (torchscript.Utility.isTensor(module[key])) {
+                    const parameter = module[key];
+                    parameter.__name__ = key;
+                    parameters.push(parameter);
+                }
+            }
+        }
+        return parameters;
+    }
+
+    static _getSubmodules(module) {
+        let submodules = [];
+        if (module && module.__type__) {
+            for (let key of Object.keys(module)) {
+                if (!key.startsWith('__')) {
+                    let value = module[key];
+                    if (value && value.__type__ && !torchscript.Utility.isTensor(value)) {
+                        submodules.push(value);
+                    }
+                }
+            }
+        }
+        return submodules;
     }
 
     get type() {
@@ -185,12 +220,12 @@ torchscript.Graph = class {
     }
 };
 
-torchscript.Argument = class {
+torchscript.Parameter = class {
 
-    constructor(name, visible, connections) {
+    constructor(name, visible, args) {
         this._name = name;
         this._visible = visible;
-        this._connections = connections;
+        this._arguments = args;
     }
 
     get name() {
@@ -201,12 +236,12 @@ torchscript.Argument = class {
         return this._visible;
     }
 
-    get connections() {
-        return this._connections;
+    get arguments() {
+        return this._arguments;
     }
 };
 
-torchscript.Connection = class {
+torchscript.Argument = class {
 
     constructor(id, type, initializer) {
         this._id = id;
@@ -233,27 +268,23 @@ torchscript.Connection = class {
 torchscript.Node = class {
 
     constructor(metadata, container, module, node) {
+
         this._metadata = metadata;
         this._attributes = [];
         this._inputs = [];
         this._outputs = [];
 
-        var input = null;
-        var connection = null;
-        var parameter = null;
-
         if (module) {
             this._operator = 'Module';
-            if (module.parameters) {
-                for (parameter of module.parameters) {
-                    this._inputs.push(new torchscript.Argument(parameter.name, true, [
-                        new torchscript.Connection('', null, parameter.initializer || null)
-                    ]));
-                    if (parameter.outputs) {
-                        this._outputs.push(new torchscript.Argument(parameter.name, true,
-                            parameter.outputs.map((id) => new torchscript.Connection(id, null, null))
-                        ));
-                    }
+            let parameters = torchscript.Graph._getParameters(module);
+            for (let parameter of parameters) {
+                this._inputs.push(new torchscript.Parameter(parameter.__name__, true, [
+                    new torchscript.Argument('', null, parameter.initializer || null)
+                ]));
+                if (parameter.__outputs__) {
+                    this._outputs.push(new torchscript.Parameter(parameter.__name__, true,
+                        parameter.__outputs__.map((id) => new torchscript.Argument(id, null, null))
+                    ));
                 }
             }
         }
@@ -262,17 +293,17 @@ torchscript.Node = class {
             this._operator = node.name;
             this._name = '';
 
-            var schema = metadata.getSchema(this._operator);
+            const schema = metadata.getSchema(this._operator);
 
             module = null; 
-            var match = true;
-            var count = 0;
-            for (input of node.inputs) {
-                for (connection of input) {
-                    parameter = container.parameters[connection.id];
+            let match = true;
+            let count = 0;
+            for (let input of node.inputs) {
+                for (let argument of input) {
+                    let parameter = container.parameters[argument.id];
                     if (parameter) {
-                        if (parameter.module && (module == null || module == parameter.module)) {
-                            module = parameter.module;
+                        if (parameter.__module__ && (module == null || module == parameter.__module__)) {
+                            module = parameter.__module__;
                             count++;
                         }
                         else {
@@ -285,69 +316,75 @@ torchscript.Node = class {
                     break;
                 }
             }
-            if (module && module.parameters.length == count && match) {
-                module.hide = true;
-                for (input of node.inputs) {
-                    for (connection of input) {
-                        parameter = container.parameters[connection.id];
-                        if (parameter && parameter.initializer) {
-                            connection.initializer = parameter.initializer;
+            if (module) {
+                let parameters = torchscript.Graph._getParameters(module).filter((p) => p.__name__ !== 'num_batches_tracked');
+                if (parameters.length == count && match) {
+                    module.__hide__ = true;
+                    for (let input of node.inputs) {
+                        for (let argument of input) {
+                            let parameter = container.parameters[argument.id];
+                            if (parameter && parameter.initializer) {
+                                argument.initializer = parameter.initializer;
+                            }
                         }
                     }
                 }
-            }
-            else {
-                module = null;
+                else {
+                    module = null;
+                }
             }
 
-            for (var inputIndex = 0; inputIndex < node.inputs.length; inputIndex++) {
-                var inputName = inputIndex.toString(); 
+            for (let inputIndex = 0; inputIndex < node.inputs.length; inputIndex++) {
+                let inputName = inputIndex.toString(); 
                 if (schema && schema.inputs && schema.inputs.length > inputIndex) {
                     inputName = schema.inputs[inputIndex].name;
                 }
-                this._inputs.push(new torchscript.Argument(inputName, true,
-                    node.inputs[inputIndex].map((input) => new torchscript.Connection(input.id, null, input.initializer || null))
+                this._inputs.push(new torchscript.Parameter(inputName, true,
+                    node.inputs[inputIndex].map((input) => new torchscript.Argument(input.id, null, input.initializer || null))
                 ));
             }
 
-            for (var outputIndex = 0; outputIndex < node.outputs.length; outputIndex++) {
-                var outputName = outputIndex.toString(); 
+            for (let outputIndex = 0; outputIndex < node.outputs.length; outputIndex++) {
+                let outputName = outputIndex.toString(); 
                 if (schema && schema.outputs && schema.outputs.length > outputIndex) {
                     outputName = schema.outputs[outputIndex].name;
                 }
-                this._outputs.push(new torchscript.Argument(outputName, true, [
-                    new torchscript.Connection(node.outputs[outputIndex], null, null)
+                this._outputs.push(new torchscript.Parameter(outputName, true, [
+                    new torchscript.Argument(node.outputs[outputIndex], null, null)
                 ]));
             }
 
-            for (var attributeIndex = 0; attributeIndex < node.attributes.length; attributeIndex++) {
-                var attributeSchema = null;
-                var attributeName = attributeIndex.toString();
-                var attributeValue = node.attributes[attributeIndex];
-                if (attributeValue && attributeValue.type === '=' && attributeValue.target.type == 'identifier') {
-                    attributeName = attributeValue.target.value;
-                    attributeValue = attributeValue.expression;
+            for (let i = 0; i < node.attributes.length; i++) {
+                let attributeSchema = null;
+                let name = i.toString();
+                let value = node.attributes[i];
+                if (value && value.type === '=' && value.target.type == 'id') {
+                    name = value.target.value;
+                    value = value.expression;
                     if (schema && schema.attributes) {
-                        attributeSchema = schema.attributes.find((s) => s.name == attributeName);
+                        attributeSchema = schema.attributes.find((s) => s.name == name);
                     }
                 }
                 else {
-                    if (schema && schema.attributes && schema.attributes.length > attributeIndex) {
-                        attributeSchema = schema.attributes[attributeIndex];
-                        attributeName = attributeSchema.name;
+                    if (schema && schema.attributes && schema.attributes.length > i) {
+                        attributeSchema = schema.attributes[i];
+                        name = attributeSchema.name;
                     }
                 }
-                this._attributes.push(new torchscript.Attribute(this, attributeSchema, attributeName, attributeValue));
+                this._attributes.push(new torchscript.Attribute(attributeSchema, name, value));
             }
         }
         
         if (module) {
-            if (module.name) {
-                var current = module;
-                this._name = current.name;
-                while (current.parent != null) {
-                    current = current.parent;
-                    this._name = [ current.name, this._name ].join('.')
+            if (module.__name__) {
+                let current = module;
+                this._name = current.__name__;
+                while (current.__parent__ != null) {
+                    current = current.__parent__;
+                    if (!current.__parent__ && !current.__name__) {
+                        break;
+                    }
+                    this._name = [ current.__name__, this._name ].join('.')
                 }
             }
         }
@@ -366,12 +403,12 @@ torchscript.Node = class {
     }
 
     get category() {
-        var schema = this._metadata.getSchema(this._operator);
+        const schema = this._metadata.getSchema(this._operator);
         return (schema && schema.category) ? schema.category : '';
     }
 
     get documentation() {
-        var schema = this._metadata.getSchema(this._operator);
+        let schema = this._metadata.getSchema(this._operator);
         if (schema) {
             schema = JSON.parse(JSON.stringify(schema));
             schema.name = this._operator;
@@ -379,21 +416,21 @@ torchscript.Node = class {
                 schema.description = marked(schema.description);
             }
             if (schema.attributes) {
-                for (var attribute of schema.attributes) {
+                for (let attribute of schema.attributes) {
                     if (attribute.description) {
                         attribute.description = marked(attribute.description);
                     }
                 }
             }
             if (schema.inputs) {
-                for (var input of schema.inputs) {
+                for (let input of schema.inputs) {
                     if (input.description) {
                         input.description = marked(input.description);
                     }
                 }
             }
             if (schema.outputs) {
-                for (var output of schema.outputs) {
+                for (let output of schema.outputs) {
                     if (output.description) {
                         output.description = marked(output.description);
                     }
@@ -423,8 +460,7 @@ torchscript.Node = class {
 
 torchscript.Attribute = class {
 
-    constructor(node, schema, name, value) {
-        this._node = node;
+    constructor(schema, name, value) {
         this._name = name;
         this._value = value;
 
@@ -439,7 +475,7 @@ torchscript.Attribute = class {
                 case 'boolean':
                     this._value = value.value;
                     break;
-                case 'identifier':
+                case 'id':
                     this._value = value.value;
                     break;
             }
@@ -461,24 +497,49 @@ torchscript.Attribute = class {
                     break;
                 case 'int32':
                 case 'int64':
-                    this._value = parseInt(this._value, 10);
+                    if (typeof this._value !== 'number') {
+                        if (typeof this._value === 'string') {
+                            this._value = parseInt(this._value, 10);
+                        }
+                        else {
+                            this._value = torchscript.Utility.format(this._value);
+                        }
+                    }
                     break;
                 case 'float32':
                 case 'float64':
-                    this._value = parseFloat(this._value);
-                    break;
-                case 'int32[]':
-                case 'int64[]':
-                    if (this._value.type == 'list' && this._value.value.every((item) => item.type === 'number')) {
-                        this._value = this._value.value.map((item) => {
-                            var number = parseInt(item.value, 10);
-                            if (!Number.isNaN(item.value - number)) {
-                                return number;
-                            }
-                            return item.value;
-                        });
+                    if (typeof this._value !== 'number') {
+                        if (typeof this._value === 'string') {
+                            this._value = parseFloat(this._value);
+                        }
+                        else {
+                            this._value = torchscript.Utility.format(this._value);
+                        }
                     }
                     break;
+                case 'int32[]':
+                case 'int64[]': {
+                    switch (this._value.type) {
+                        case 'list':
+                            this._value = this._value.value.map((item) => {
+                                if (item.type === 'number') {
+                                    let number = parseInt(item.value, 10);
+                                    if (!Number.isNaN(item.value - number)) {
+                                        return number;
+                                    }
+                                }
+                                if (item.type === 'call') {
+                                    return torchscript.Utility.format(item);
+                                }
+                                return item;
+                            });
+                            break;
+                        case 'call':
+                            this._value = torchscript.Utility.format(this._value);
+                            break;
+                    }
+                    break;
+                }
             }
 
             if (Object.prototype.hasOwnProperty.call(schema, 'visible') && !schema.visible) {
@@ -516,12 +577,10 @@ torchscript.Attribute = class {
 
 torchscript.Tensor = class {
 
-    constructor(tensor, container) {
-        this._type = new torchscript.TensorType(tensor.dataType, new torchscript.TensorShape(tensor.dims));
-        var key = container.prefix + tensor.data.key;
-        var entry = container.entries.find((entry) => entry.name == key);
-        this._name = tensor.data.key;
-        this._data = entry.data;
+    constructor(tensor) {
+        this._name = tensor.name || '';
+        this._type = new torchscript.TensorType(tensor.storage.dataType, new torchscript.TensorShape(tensor.size));
+        this._data = tensor.storage.data;
         this._littleEndian = true;
     }
 
@@ -542,7 +601,7 @@ torchscript.Tensor = class {
     }
 
     get value() {
-        var context = this._context();
+        let context = this._context();
         if (context.state) {
             return null;
         }
@@ -551,17 +610,17 @@ torchscript.Tensor = class {
     }
 
     toString() {
-        var context = this._context();
+        let context = this._context();
         if (context.state) {
             return '';
         }
         context.limit = 10000;
-        var value = this._decode(context, 0);
+        let value = this._decode(context, 0);
         return torchscript.Tensor._stringify(value, '', '    ');
     }
 
     _context() {
-        var context = {};
+        let context = {};
         context.state = null;
         context.index = 0;
         context.count = 0;
@@ -569,6 +628,20 @@ torchscript.Tensor = class {
         if (!this._type.dataType) {
             context.state = 'Tensor has no data type.';
             return context;
+        }
+        switch (this._type.dataType) {
+            case 'uint8':
+            case 'int8':
+            case 'int16':
+            case 'int32':
+            case 'int64':
+            case 'float16':
+            case 'float32':
+            case 'float64':
+                break;
+            default:
+                context.state = "Tensor data type '" + this._type.dataType + "' is not supported.";
+                return context;
         }
         if (!this._type.shape) {
             context.state = 'Tensor has no dimensions.';
@@ -587,20 +660,19 @@ torchscript.Tensor = class {
     }
 
     _decode(context, dimension) {
-        var results = [];
-        var dimensions = context.dimensions;
+        let results = [];
+        let dimensions = context.dimensions;
         if (dimensions.length == 0) {
             dimensions = [ 1 ];
         }
-        var size = dimensions[dimension];
+        let size = dimensions[dimension];
         if (dimension == dimensions.length - 1) {
-            for (var i = 0; i < size; i++) {
+            for (let i = 0; i < size; i++) {
                 if (context.count > context.limit) {
                     results.push('...');
                     return results;
                 }
-                switch (context.dataType)
-                {
+                switch (context.dataType) {
                     case 'uint8':
                         results.push(context.dataView.getUint8(context.index, this._littleEndian));
                         context.index++;
@@ -622,7 +694,7 @@ torchscript.Tensor = class {
                         context.count++;
                         break;
                     case 'int64':
-                        results.push(new long.Long(context.dataView.getUint32(context.index, true), context.dataView.getUint32(context.index + 4, true), true));
+                        results.push(new long.Long(context.dataView.getUint32(context.index, true), context.dataView.getUint32(context.index + 4, true), false));
                         context.index += 8;
                         context.count++;
                         break;
@@ -645,7 +717,7 @@ torchscript.Tensor = class {
             }
         }
         else {
-            for (var j = 0; j < size; j++) {
+            for (let j = 0; j < size; j++) {
                 if (context.count > context.limit) {
                     results.push('...');
                     return results;
@@ -661,9 +733,9 @@ torchscript.Tensor = class {
 
     static _stringify(value, indentation, indent) {
         if (Array.isArray(value)) {
-            var result = [];
+            let result = [];
             result.push(indentation + '[');
-            var items = value.map((item) => torchscript.Tensor._stringify(item, indentation + indent, indent));
+            const items = value.map((item) => torchscript.Tensor._stringify(item, indentation + indent, indent));
             if (items.length > 0) {
                 result.push(items.join(',\n'));
             }
@@ -692,13 +764,7 @@ torchscript.Tensor = class {
 torchscript.TensorType = class {
 
     constructor(dataType, shape) {
-        switch(dataType) {
-            case 'FLOAT': this._dataType = 'float32'; break;
-            case 'DOUBLE': this._dataType = 'float64'; break;
-            case 'INT32': this._dataType = 'int32'; break;
-            case 'INT64': this._dataType = 'int64'; break;
-            default: throw new torchscript.Error("Unknown tensor data type '" + dataType + "'.");
-        }
+        this._dataType = dataType;
         this._shape = shape;
     }
 
@@ -754,9 +820,9 @@ torchscript.Metadata = class {
         this._map = {};
         this._attributeCache = {};
         if (data) {
-            var items = JSON.parse(data);
+            let items = JSON.parse(data);
             if (items) {
-                for (var item of items) {
+                for (let item of items) {
                     if (item.name && item.schema) {
                         this._map[item.name] = item.schema;
                     }
@@ -770,12 +836,12 @@ torchscript.Metadata = class {
     }
 
     getAttributeSchema(operator, name) {
-        var map = this._attributeCache[operator];
+        let map = this._attributeCache[operator];
         if (!map) {
             map = {};
-            var schema = this.getSchema(operator);
+            const schema = this.getSchema(operator);
             if (schema && schema.attributes && schema.attributes.length > 0) {
-                for (var attribute of schema.attributes) {
+                for (let attribute of schema.attributes) {
                     map[attribute.name] = attribute;
                 }
             }
@@ -785,76 +851,806 @@ torchscript.Metadata = class {
     }
 };
 
+torchscript.Utility = class {
+
+    static target(expression) {
+        if (expression.type == 'id') {
+            return expression.value;
+        }
+        if (expression.type == '.') {
+            return torchscript.Utility.target(expression.target) + '.' + torchscript.Utility.target(expression.member)
+        }
+        throw new torchscript.Error("Failed to resolve name '" + JSON.stringify(expression) + "'.");
+    }
+
+    static format(expression) {
+        switch (expression.type) {
+            case 'call': {
+                let builder = [];
+                for (let argument of expression.arguments) {
+                    builder.push(torchscript.Utility.format(argument));
+                }
+                return this.target(expression.target) + '(' + builder.join(',') + ')';
+            }
+            case 'number':
+            case 'id': {
+                return expression.value;
+            }
+            case 'list': {
+                let builder = [];
+                for (let item of expression.value) {
+                    builder.push(torchscript.Utility.format(item));
+                }
+                return '[' + builder.join(',') + ']';
+            }
+            case '.': {
+                return torchscript.Utility.target(expression);
+            }
+            default:
+                throw new torchscript.Error("Unknown expression type '" + expression.type + "'.");
+        }
+    }
+
+    static isTensor(obj) {
+        return obj && obj.__type__ && obj.__type__.endsWith('Tensor');
+    }
+}
+
+torchscript.Container = class {
+
+    constructor(identifier, entries, python, pickle) {
+        this._identifier = identifier;
+        this._entries = entries;
+        this._python = python;
+        this._pickle = pickle;
+        this._utf8Decoder = new TextDecoder('utf-8');
+        this._types = new Map();
+        this._packages = new Map();
+
+        // https://github.com/pytorch/pytorch/blob/master/torch/csrc/jit/docs/serialization.md
+        const versionEntry = this._entries.find((entry) => entry.name == 'version' || entry.name.endsWith('/version'));
+        if (!versionEntry) {
+            throw new torchscript.Error('TorchScript container does not contain version signature.');
+        }
+        this._prefix = versionEntry.name.substring(0, versionEntry.name.length - 7);
+        this._version = JSON.parse(this._utf8Decoder.decode(versionEntry.data));
+
+        this._functionTable = new Map();
+        this._functionTable.set('annotate', function(type, value) {
+            return value;
+        });
+        this._functionTable.set('collections.OrderedDict', function(args) {
+            let obj = [];
+            obj.__setitem__ = function(key, value) {
+                obj.push({ key: key, value: value });
+            };
+            if (args) {
+                for (let arg of args) {
+                    obj.__setitem__(arg[0], arg[1]);
+                }
+            }
+            return obj;
+        });
+        this._functionTable.set('int', function(/* tensor */) {
+            return 0; // TODO
+        });
+        this._functionTable.set('float', function(/* tensor */) {
+            return 0.0; // TODO
+        });
+        this._functionTable.set('getattr', function(obj, name, defaultValue) {
+            if (Object.prototype.hasOwnProperty.call(obj, name)) {
+                return obj[name];
+            }
+            return defaultValue;
+        });
+        this._functionTable.set('unchecked_cast', function(type, value) {
+            return value;
+        });
+        this._functionTable.set('ops.prim.unchecked_unwrap_optional', function(value) {
+            return value;
+        });
+        this._functionTable.set('ops.prim.NumToTensor', function(value) {
+            return { __type__: 'torch.Tensor', value: value }; // TODO
+        });
+        this._functionTable.set('ops.quantized.conv_prepack', function(/* weight, bias, stride, padding, dilation, groups */) {
+            return { __type__: '__conv_prepack__' }; // TODO
+        });
+        this._functionTable.set('ops.quantized.linear_prepack', function(/* weight, bias */) {
+            return { __type__: '__linear_prepack__' }; // TODO
+        });
+
+        this._functionTable.set('ops.prim.RaiseException', function(message) {
+            throw new torchscript.Error(message);
+        });
+        this._functionTable.set('torch.__is__', function(left, right) {
+            if (left === null && right === null) {
+                return true;
+            }
+            if ((left !== null && right === null) || (left === null && right !== null)) {
+                return false;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.__isnot__', function(left, right) {
+            if (left === null && right === null) {
+                return false;
+            }
+            if ((left !== null && right === null) || (left === null && right !== null)) {
+                return true;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.__not__', function(value) {
+            if (typeof value === 'boolean') {
+                return !value;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch._unwrap_optional', function(value) {
+            return value; // TODO
+        });
+        this._functionTable.set('torch._utils._rebuild_tensor_v2', function(storage, storage_offset, size, stride, requires_grad, backward_hooks) {
+            return {
+                __type__: storage.__type__.replace('Storage', 'Tensor'),
+                storage: storage,
+                storage_offset: storage_offset,
+                size: size,
+                stride: stride,
+                requires_grad:requires_grad,
+                backward_hooks: backward_hooks
+            };
+        });
+        this._functionTable.set('torch._utils._rebuild_qtensor', function(storage, storage_offset, size, stride, quantizer_params, requires_grad, backward_hooks) {
+            return {
+                __type__: storage.__type__.replace('Storage', 'Tensor'),
+                storage: storage,
+                storage_offset: storage_offset,
+                size: size,
+                stride: stride,
+                quantizer_params: quantizer_params,
+                requires_grad:requires_grad,
+                backward_hooks: backward_hooks
+            };
+        });
+
+        this._functionTable.set('torch.dim', function(tensor) {
+            if (tensor && tensor.size) {
+                return tensor.size.length;
+            }
+            return 0; // TODO
+        });
+        this._functionTable.set('torch.eq', function(left, right) {
+            if (typeof left === 'string' && typeof right === 'string') {
+                return left === right;
+            }
+            if (typeof left === 'number' && typeof right === 'number') {
+                return left === right;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.gt', function(left, right) {
+            if (typeof left === 'number' && typeof right === 'number') {
+                return left > right;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.jit._pickle.build_boollist', function(data) {
+            return data;
+        });
+        this._functionTable.set('torch.jit._pickle.build_doublelist', function(data) {
+            return data;
+        });
+        this._functionTable.set('torch.jit._pickle.build_intlist', function(data) {
+            return data;
+        });
+        this._functionTable.set('torch.jit._pickle.build_tensorlist', function(data) {
+            return data;
+        });
+        this._functionTable.set('torch.lt', function(left, right) {
+            if (typeof left === 'number' && typeof right === 'number') {
+                return left < right;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.mul', function(left, right) {
+            if (typeof left === 'number' && typeof right === 'number') {
+                return left * right;
+            }
+            if (torchscript.Utility.isTensor(left) && torchscript.Utility.isTensor(right)) {
+                return { __type__: 'torch.Tensor' };
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.ne', function(left, right) {
+            if (typeof left === 'number' && typeof right === 'number') {
+                return left !== right;
+            }
+            throw new torchscript.Error('Unknown expression type.');
+        });
+        this._functionTable.set('torch.q_scale', function(/* tensor */) {
+            return -1; // TODO
+        });
+        this._functionTable.set('torch.t', function(tensor) {
+            return tensor;
+        });
+        this._functionTable.set('uninitialized', function(type) {
+            return ({ __type__: type.__typeref__ });
+        });
+        this._constructorTable = new Map();
+        this._constructorTable.set('torch.ByteStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 1; this.dataType = 'uint8'; 
+        });
+        this._constructorTable.set('torch.CharStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 1; this.dataType = 'int8'; 
+        });
+        this._constructorTable.set('torch.ShortStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 2; this.dataType = 'int16';
+        });
+        this._constructorTable.set('torch.IntStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 4; this.dataType = 'int32';
+        });
+        this._constructorTable.set('torch.LongStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 8; this.dataType = 'int64';
+        });
+        this._constructorTable.set('torch.HalfStorage', function (size) {
+            this.size = size; this.dataTypeSize = 2; this.dataType = 'float16';
+        });
+        this._constructorTable.set('torch.FloatStorage', function (size) {
+            this.size = size; this.dataTypeSize = 4; this.dataType = 'float32';
+        });
+        this._constructorTable.set('torch.DoubleStorage', function (size) { 
+            this.size = size; this.dataTypeSize = 8; this.dataType = 'float64';
+        });
+        this._constructorTable.set('torch.QInt8Storage', function (size) {
+            this.size = size; this.dataTypeSize = 1; this.dataType = 'qint8';
+        });
+
+        const entry = this._entries.find((entry) => entry.name == this._prefix + 'data.pkl');
+        if (entry && entry.data) {
+            this._data = this._unpickle(entry.data, this._storage('data'));
+        }
+        else {
+            const entry = this._entries.find((entry) => entry.name == this._prefix + 'model.json');
+            if (entry) {
+                const model = JSON.parse(this._utf8Decoder.decode(entry.data))
+                this._producer = model.producerName + (model.producerVersion ? ' v' + model.producerVersion : '');
+                this._data = model.mainModule || {};
+                this._name = this._data.name || '';
+                if (this._data.torchscriptArena) {
+                    this._script = this._data.torchscriptArena.key;
+                }
+                let queue = [ this._data ];
+                let entries = new Map();
+                for (let entry of this._entries) {
+                    entries.set(entry.name, entry.data);
+                }
+                const tensorTypeMap = new Map([
+                    [ 'FLOAT', 'Float' ],
+                    [ 'FLOAT16', 'Half' ],
+                    [ 'DOUBLE', 'Double' ],
+                    [ 'INT32', 'Int' ],
+                    [ 'INT64', 'Long' ]
+                ]);
+                const tensors = model.tensors;
+                this._constants = tensors;
+                for (let tensor of tensors) {
+                    const key = this._prefix + tensor.data.key;
+                    if (!tensorTypeMap.has(tensor.dataType)) {
+                        throw new torchscript.Error("Unknown tensor data type '" + tensor.dataType + "'.");
+                    }
+                    const type = tensorTypeMap.get(tensor.dataType);
+                    tensor.__type__ = 'torch.' + type + 'Tensor';
+                    tensor.name = tensor.data.key;
+                    tensor.size = tensor.dims ? tensor.dims.map((dim) => parseInt(dim, 10)) : null;
+                    tensor.storage = this._invoke('torch.' + type + 'Storage', [ tensor.size ]);
+                    tensor.storage.data = entries.get(key);
+                }
+                while (queue.length > 0) {
+                    let module = queue.shift();
+                    module.__type__ = module.__type__ || 'torch.Module';
+                    if (module.name) {
+                        module.__name__ = module.name;
+                    }
+                    if (module.submodules) {
+                        for (let submodule of module.submodules) {
+                            module[submodule.name] = submodule;
+                            submodule.__parent__ = module;
+                            queue.push(submodule);
+                        }
+                        delete module.submodules;
+                    }
+                    let parameters = [];
+                    if (module.parameters) {
+                        parameters = parameters.concat(module.parameters);
+                        delete module.parameters;
+                    }
+                    if (module.arguments) {
+                        parameters = parameters.concat(module.arguments);
+                        delete module.arguments;
+                    }
+                    for (let parameter of parameters) {
+                        const tensor = tensors[parameter.tensorId];
+                        module[parameter.name] = tensor;
+                        parameter.__type__ = parameter.__type__ || 'torch.Tensor';
+                    }
+                }
+            }
+        }
+    }
+
+    get identifier() {
+        return this._identifier;
+    }
+
+    get name() {
+        return this._name;
+    }
+
+    get producer() {
+        return this._producer;
+    }
+
+    get version() {
+        return this._version;
+    }
+
+    get data() {
+        return this._data;
+    }
+
+    get body() {
+        if (this._body === undefined) {
+            this._body = null;
+            if (this._script) {
+                const program = this.parse(this._script);
+                this._body = program.body;
+            }
+            else {
+                const type = this.type(this._data.__type__);
+                this._body = type.body.statements;
+            }
+        }
+        return this._body;
+    }
+
+    get attributes() {
+        if (this._attributes ===  undefined) {
+            this._attributes = null;
+            const entry = this._entries.find((entry) => entry.name == this._prefix + 'attributes.pkl');
+            if (entry && entry.data) {
+                this._attributes = this._unpickle(entry.data, null);
+
+            }
+        }
+        return this._attributes;
+
+    }
+
+    get constants() {
+        if (this._constants ===  undefined) {
+            this._constants = null;
+            const entry = this._entries.find((entry) => entry.name == this._prefix + 'constants.pkl');
+            if (entry && entry.data) {
+                this._constants = this._unpickle(entry.data, this._storage('constants'));
+            }
+        }
+        return this._constants;
+    }
+
+    parse(file) {
+        if (!this._packages.has(file)) {
+            const key = this._prefix + file;
+            const entries = this._entries.filter((e) => e.name === key);
+            if (entries.length === 1) {
+                const code = this._utf8Decoder.decode(entries[0].data);
+                const reader = new this._python.Parser(code, file);
+                const program = reader.parse();
+                this._packages.set(file, program);
+            }
+        }
+        return this._packages.get(file);
+    }
+
+    _storage(dirname) {
+        let map = new Map();
+        const prefix = this._prefix + dirname + '/';
+        for (let entry of this._entries) {
+            if (entry.name.startsWith(prefix)) {
+                const key = entry.name.substring(prefix.length);
+                map.set(key, entry.data);
+            }
+        }
+        return map;
+    }
+
+    _unpickle(data, storage_map) {
+        let deserialized_objects = new Map();
+        const persistent_load = (saved_id) => {
+            const typename = saved_id.shift();
+            if (typename !== 'storage') {
+                throw new torchscript.Error("Unknown persistent load type '" + typename + "'.");
+            }
+            const data_type = saved_id.shift();
+            const root_key = saved_id.shift();
+            saved_id.shift(); // location
+            const size = saved_id.shift();
+            let storage = null;
+            if (deserialized_objects.has(root_key)) {
+                storage = deserialized_objects.get(root_key);
+            }
+            else {
+                storage = this._invoke(data_type, [ size ]);
+                storage.data = storage_map.get(root_key);
+                deserialized_objects[root_key] = storage;
+            }
+            const view_metadata = saved_id.shift();
+            if (view_metadata) {
+                let view_key = view_metadata.shift();
+                view_metadata.shift(); // view_offset
+                view_metadata.shift(); // view_size
+                let view = deserialized_objects[view_key];
+                if (!view) {
+                    view = null; // storage.slice(view_offset, view_offset + view_size);
+                    deserialized_objects[view_key] = view;
+                }
+                return view;
+            }
+            return storage;
+        };
+        return new this._pickle.Unpickler(data).load((name, args) => this._invoke(name, args), persistent_load);
+    }
+
+    type(name) {
+        if (!this._types.has(name)) {
+            let parts = name.split('.');
+            const className = parts.pop();
+            const file = 'code/' + parts.join('/') + '.py';
+            const program = this.parse(file);
+            if (program) {
+                for (let statement of program.body) {
+                    if (statement.type === 'class' && statement.name == className) {
+                        this._types.set(name, statement);
+                        break;
+                    }
+                }
+            }
+        }
+        return this._types.get(name);
+    }
+
+    trace(obj, method) {
+        let args = [];
+        this._tensors = new Set();
+        for (let parameter of method.parameters) {
+            if (parameter.name !== 'self') {
+                this._tensors.add(parameter.name);
+                args.push({});
+            }
+        }
+        this._apply(method, obj, args);
+        this._tensors = null;
+    }
+
+    _trace(name /*, args */) {
+        let namespace = 'torch.';
+        if (name.startsWith(namespace)) {
+            switch (name) {
+                case 'torch.conv2d':
+                    return { __type__: 'Tensor', size: [ 0, 0, 0, 0 ] }; // TODO
+                case 'torch._convolution':
+                case 'torch.addmm':
+                case 'torch.relu_':
+                case 'torch.relu':
+                case 'torch.max_pool2d':
+                case 'torch.view':
+                case 'torch.matmul':
+                case 'torch.flatten':
+                case 'torch.add_':
+                case 'torch.add':
+                case 'torch.mul_':
+                case 'torch.mean':
+                case 'torch.log_softmax':
+                case 'torch.dropout':
+                case 'torch.dropout_':
+                case 'torch.adaptive_avg_pool2d':
+                case 'torch.batch_norm':
+                case 'torch.cat':
+                case 'torch.select':
+                case 'torch.unsqueeze':
+                    return { __type__: 'Tensor' }; // TODO
+                case 'torch.max_pool2d_with_indices':
+                    return [ { __type__: 'Tensor' }, { __type__: 'Tensor' } ]; // TODO
+                case 'torch.list_with_default':
+                    return [0]; // TODO
+                case 'torch.size':
+                    return 0; // TODO
+            }
+        }
+        throw new torchscript.Error("Unknown symbol '" + name + "'.");
+    }
+
+    _invoke(name, args) {
+        if (this._functionTable.has(name)) {
+            const func = this._functionTable.get(name);
+            return func.apply(null, args);
+        }
+        let obj = { __type__: name };
+        if (this._constructorTable.has(name)) {
+            const constructor = this._constructorTable.get(name);
+            constructor.apply(obj, args);
+            return obj;
+        }
+        const type = this.type(name);
+        if (type) {
+            this._construct(type, obj, args);
+            return obj;
+        }
+        return this._trace(name, args);
+    }
+
+    _construct(type, obj, args) {
+        this._block(type.body, obj, obj);
+        if (obj.__init__ && typeof obj.__init__ === 'function') {
+            obj.__init__(obj, args);
+        }
+    }
+
+    _apply(method, obj, args) {
+        args = Array.prototype.slice.call(args);
+        var locals = {};
+        for (let parameter of method.parameters) {
+            if (parameter.name == 'self') {
+                locals['self'] = obj;
+            }
+            else {
+                locals[parameter.name] = args.shift();
+            }
+        }
+        return this._block(method.body, obj, locals)
+    }
+
+    _block(block, obj, locals) {
+        let statements = Array.prototype.slice.call(block.statements);
+        while (statements.length > 0) {
+            const statement = statements.shift();
+            switch (statement.type) {
+                case 'pass': {
+                    break;
+                }
+                case 'return': {
+                    return this._expression(statement.expression, obj, locals);
+                }
+                case 'def': {
+                    const method = statement;
+                    const self = this;
+                    obj[statement.name] = function() {
+                        return self._apply(method, obj, arguments);
+                    }
+                    break;
+                }
+                case 'var': {
+                    break;
+                }
+                case '=': {
+                    this._expression(statement, obj, locals);
+                    break;
+                }
+                case 'if': {
+                    const condition = this._expression(statement.condition, obj, locals);
+                    if (condition === true) {
+                        statements = statement.then.statements.concat(statements);
+                        break;
+                    }
+                    else if (condition === false) {
+                        statements = statement.else.statements.concat(statements);
+                        break;
+                    }
+                    throw new torchscript.Error("Unknown condition '" + condition + "'.");
+                }
+                case 'call': {
+                    this._expression(statement, obj, locals);
+                    break;
+                }
+                default: {
+                    throw new torchscript.Error("Unknown statement '" + statement + "'.");
+                }
+            }
+        }
+    }
+
+    _expression(expression, obj, locals) {
+        switch (expression.type) {
+            case '=': {
+                const target = expression.target;
+                if (target.type === 'id') {
+                    locals[target.value] = this._expression(expression.expression, obj, locals);
+                    return;
+                }
+                else if (target.type === '[]') {
+                    if (target.target.type === 'id' &&
+                        target.arguments.type === 'list' &&
+                        target.arguments.value.length === 1) {
+                        const index = this._expression(target.arguments.value[0], obj, locals);
+                        if (target.target.value === '__annotations__') {
+                            locals[target.target.value] = locals[target.target.value] || {};
+                        }
+                        locals[target.target.value][index] = this._expression(expression.expression, obj, locals);
+                        return;
+                    }
+                }
+                else if (target.type === '.' && 
+                    target.member.type === 'id') {
+                    this._expression(target.target, obj, locals)[target.member.value] = this._expression(expression.expression, obj, locals);
+                    return;
+                }
+                else if (target.type === 'tuple') {
+                    const value = this._expression(expression.expression, obj, locals);
+                    if  (target.value.length == value.length && target.value.every((item) => item.type === 'id')) {
+                        for (let i = 0; i < value.length; i++) {
+                            locals[target.value[i].value] = value[i];
+                        }
+                        return;
+                    }
+                }
+                break;
+            }
+            case 'list': {
+                return expression.value.map((item) => this._expression(item, obj, locals));
+            }
+            case 'string': {
+                return expression.value.substring(1, expression.value.length - 1);
+            }
+            case 'number': {
+                return Number(expression.value);
+            }  
+            case '[]': {
+                if (expression.target.type === 'id' &&
+                    expression.arguments.type === 'list' &&
+                    expression.arguments.value.length === 1) {
+                    if (Object.prototype.hasOwnProperty.call(locals, expression.target.value)) {
+                        const index = this._expression(expression.arguments.value[0], obj, locals);
+                        return locals[expression.target.value][index];
+                    }
+                    if (expression.target.value === 'List' || expression.target.value === 'Optional') {
+                        if (expression.arguments.value.every((item) => item.type === 'id')) {
+                            return { __typeref__: expression.target.value + '[' + expression.arguments.value.map((item) => item.value).join(',') + ']' };
+                        }
+                    }
+                }
+                break;
+            }
+            case '.': {
+                const targetName = torchscript.Utility.target(expression);
+                if (targetName) {
+                    const type = this.type(targetName);
+                    if (type) {
+                        return { __type__: type };
+                    }
+                }
+                if (expression.member.type == 'id') {
+                    const target = this._expression(expression.target, obj, locals);
+                    return target[expression.member.value];
+                }
+                break;
+            }
+            case 'call': {
+                const targetName = torchscript.Utility.target(expression.target);
+                if (targetName) {
+                    const args = expression.arguments.map((argument) => this._expression(argument, obj, locals));
+                    return this._invoke(targetName, args);
+                }
+                break;
+            }
+            case 'id': {
+                switch (expression.value) {
+                    case 'self': return obj;
+                    case 'None': return null;
+                    case 'True': return true;
+                    case 'False': return false;
+                }
+                if (Object.prototype.hasOwnProperty.call(locals, expression.value)) {
+                    return locals[expression.value];
+                }
+                if (expression.value === 'Tensor') {
+                    return { __typeref__: expression.value };
+                }
+                if (expression.value === 'int') {
+                    return { __typeref__: expression.value };
+                }
+                if (expression.value === 'CONSTANTS') {
+                    if (!Object.prototype.hasOwnProperty.call(locals, 'CONSTANTS')) {
+                        let obj = {};
+                        let constants = this.constants;
+                        for (let i = 0; i < constants.length; i++) {
+                            obj['c' + i.toString()] = constants[i];
+                        }
+                        locals['CONSTANTS'] = obj;
+                    }
+                    return locals['CONSTANTS'];
+                }
+                break;
+            }
+            case 'tuple': {
+                return expression.value.map((expression) => this._expression(expression, obj, locals));
+            }
+        }
+        throw new torchscript.Error("Unknown expression '" + JSON.stringify(expression) + "'.");
+    }
+}
+
 torchscript.GraphContext = class {
 
-    constructor(container, mainModule) {
+    constructor(container) {
 
         this._container = container;
-        this._mainModule = mainModule;
+
+        this._data = container.data;
 
         this._inputs = [];
         this._outputs = [];
         this._nodes = [];
 
-        this._moduleMap = {};
-        this._connectionMap = {};
-        this._numToTensorMap = {};
+        this._moduleMap = new Map();
+        this._state = {};
 
-        if (mainModule.torchscriptArena && mainModule.torchscriptArena.key) {
-            var codeKey = container.prefix + mainModule.torchscriptArena.key;
-            var codeEntries = container.entries.filter((e) => e.name === codeKey);
-            if (codeEntries.length == 1) {
-                var codeEntry = codeEntries[0];
-                var textDecoder = new TextDecoder('utf-8');
-                var code = textDecoder.decode(codeEntry.data);
-                var reader = new torchscript.PythonReader(code);
-                var statements = reader.statements();
-                var method = statements.find((statement) => statement.type == 'def' && statement.name == 'forward');
-                if (method) {
-                    this._body = method.body;
-                    var methodParameters = method.parameters;
-                    if (methodParameters.length > 0 && methodParameters[0].name == 'self') {
-                        methodParameters.shift();
-                    }
-                    for (var parameter of methodParameters) {
-                        this._parameter(parameter);
-                    }
+        let statements = container.body;
+        let method = statements.find((statement) => statement.type == 'def' && statement.name == 'forward');
+        if (!method) {
+            throw new torchscript.Error("Method 'forward' not found.");
+        }
 
-                    if (this._body.length >= 2) {
-                        var returnStatement = this._body[this._body.length - 1];
-                        var assignStatement = this._body[this._body.length - 2];
-                        if (returnStatement.type == 'return' && 
-                            returnStatement.expression.type == 'identifier' &&
-                            assignStatement.target.type == 'identifier' &&
-                            assignStatement.target.value == returnStatement.expression.value) {
-                            returnStatement.expression = assignStatement.expression;
-                            this._body.pop();
-                            this._body.pop();
-                            this._body.push(returnStatement);
-                        }
-                    }
+        // container.trace(this.data, method);
 
-                    while (this._body.length > 0) {
-                        var statement = this._body.shift();
-                        if (this._attributeStatement(statement)) {
-                            continue;
-                        }
-                        if (this._moduleStatement(statement)) {
-                            continue;
-                        }
-                        if (this._connectionStatement(statement)) {
-                            continue;
-                        }
-                        if (this._nodeStatement(statement)) {
-                            continue;
-                        }
-                        if (this._returnStatement(statement)) {
-                            continue;
-                        }
-                        throw new torchscript.Error("Unknown statement '" + JSON.stringify(statement) + "'.");
-                    }
-                }
+        this._body = method.body.statements;
+        let methodParameters = method.parameters;
+        if (methodParameters.length > 0 && methodParameters[0].name == 'self') {
+            methodParameters.shift();
+        }
+        for (let parameter of methodParameters) {
+            this._parameter(parameter);
+        }
+
+        if (this._body.length >= 2) {
+            // x = ...
+            // return x
+            let returnStatement = this._body[this._body.length - 1];
+            let assignStatement = this._body[this._body.length - 2];
+            if (returnStatement.type === 'return' && 
+                returnStatement.expression.type === 'id' &&
+                assignStatement.type === '=' &&
+                assignStatement.target.type === 'id' &&
+                assignStatement.target.value === returnStatement.expression.value) {
+                returnStatement.expression = assignStatement.expression;
+                this._body.pop();
+                this._body.pop();
+                this._body.push(returnStatement);
             }
+        }
+
+        while (this._body.length > 0) {
+            let statement = this._body.shift();
+            if (this._conditionStatement(statement)) {
+                continue;
+            }
+            if (this._assignStatement(statement)) {
+                continue;
+            }
+            if (this._argumentStatement(statement)) {
+                continue;
+            }
+            if (this._nodeStatement(statement)) {
+                continue;
+            }
+            if (this._returnStatement(statement)) {
+                continue;
+            }
+            if (statement.type === 'pass') {
+                continue;
+            }
+            if (this._isCall(statement, 'torch.warn', [ {}, {} ])) {
+                continue;
+            }
+            throw new torchscript.Error("Unknown statement.");
         }
     }
 
@@ -871,13 +1667,13 @@ torchscript.GraphContext = class {
     }
 
     _parameter(parameter) {
-        var type = parameter.parameterType; 
+        let type = parameter.parameterType; 
         if (type.type == 'type' && type.value == 'Tuple' && type.arguments && type.arguments.length > 0) {
             if (this._body.length > 0) {
-                var statement = this._body[0];
-                if (statement.expression.type == 'identifier' && statement.expression.value == parameter.name) {
-                    if (statement.type === '=' && statement.target.type === 'identifier_list') {
-                        for (var input of statement.target.value) {
+                let statement = this._body[0];
+                if (statement.expression.type == 'id' && statement.expression.value == parameter.name) {
+                    if (statement.type === '=' && statement.target.type === 'tuple') {
+                        for (let input of statement.target.value) {
                             if (input) {
                                 this._inputs.push(input.value);
                             }
@@ -892,27 +1688,56 @@ torchscript.GraphContext = class {
         }
     }
 
+    _conditionStatement(statement) {
+        if (statement.type === 'if') {
+            let expression = statement.condition;
+            if (!this._isBooleanLiteral(expression)) {
+                if (expression.type == 'id' && this._state[expression.value]) {
+                    expression = this._state[expression.value]
+                }
+                else {
+                    expression = this._evaluateBooleanExpression(statement.condition);
+                }
+            }
+            if (this._isBooleanLiteral(expression)) {
+                switch (expression.value) {
+                    case 'True':
+                        this._body = statement.then.statements.concat(this._body);
+                        return true;
+                    case 'False':
+                        this._body = statement.else.statements.concat(this._body);
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     _returnStatement(statement) {
         if (statement.type == 'return') {
-            var variable = this._variable();
-            if (this._nodeExpression(statement.expression, variable)) {
+            let variable = this._variable();
+            let expression = statement.expression;
+            if (this._nodeExpression(expression, variable)) {
                 this._outputs.push(variable.value);
                 return true;
             }
-            if (statement.expression.type == 'identifier') {
-                this._outputs.push(statement.expression.value);
+            if (expression.type == 'id' && this._state[expression.value] && this._state[expression.value].type === 'tuple' ) {
+                expression = this._state[expression.value];
+            }
+            if (expression.type == 'id') {
+                this._outputs.push(expression.value);
                 return true;
             }
-            if (statement.expression.type == 'tuple') {
-                var outputs = [];
-                for (var expression of statement.expression.value) {
+            if (expression.type == 'tuple') {
+                let outputs = [];
+                for (let item of expression.value) {
                     variable = this._variable();
-                    if (this._nodeExpression(expression, variable)) {
+                    if (this._nodeExpression(item, variable)) {
                         outputs.push(variable.value);
-                        continue
+                        continue;
                     }
-                    if (expression.type == 'identifier') {
-                        outputs.push(expression.value);
+                    if (item.type == 'id') {
+                        outputs.push(item.value);
                         continue;
                     }
                     return false;
@@ -925,108 +1750,159 @@ torchscript.GraphContext = class {
     }
 
     _nodeExpression(expression, target) {
-        if (expression.type == 'call' && (target.type == 'identifier' || target.type == 'identifier_list')) {
-            var name = this._name(expression.target);
-            var namespace = 'torch.';
-            if (name.startsWith(namespace)) {
-                var node = {};
-                node.name = name.substring(namespace.length);
-                node.inputs = [];
-                node.outputs = [];
-                node.attributes = [];
-                var args = expression.arguments;
+        if (expression.type == 'call' && (target.type == 'id' || target.type == 'tuple')) {
+            let name = torchscript.Utility.target(expression.target);
+            if (name.startsWith('torch.') || name.startsWith('ops.quantized')) {
+                let inputs = [];
+                let outputs = [];
+                let args = expression.arguments;
                 while (args.length > 0) {
-                    var argument = args[0];
-                    argument = this._moduleTensor(argument);
-                    if (argument.type == 'identifier' && this._connectionMap[argument.value]) {
-                        argument = this._connectionMap[argument.value];
-                        delete this._connectionMap[argument.value];
+                    let argumentExpression = args[0];
+                    argumentExpression = this._moduleTensor(argumentExpression);
+                    if (this._isCall(argumentExpression, 'ops.prim.data', [ {} ])) {
+                        argumentExpression = argumentExpression.arguments[0];
                     }
-                    if (argument.type == 'identifier') {
-                        node.inputs.push([ { id: argument.value } ]);
+                    if (argumentExpression.type == 'id' &&
+                        this._state[argumentExpression.value]) {
+                        const valueExpression = this._state[argumentExpression.value];
+                        if (!torchscript.Utility.isTensor(valueExpression)) {
+                            argumentExpression = this._state[argumentExpression.value];
+                        }
+                    }
+                    if (argumentExpression.type === 'id') {
+                        if (this._isBooleanLiteral(argumentExpression)) {
+                            break;
+                        }
+                        let argument = argumentExpression.value;
+                        inputs.push([ { id: argument } ]);
                         args.shift();
                         continue;
                     }
-                    if (argument.type == 'list') {
-                        var connections = [];
-                        for (var input of argument.value) {
-                            var variable = this._variable();
+                    if (argumentExpression.type == 'list') {
+                        let list = [];
+                        for (let input of argumentExpression.value) {
+                            let variable = this._variable();
                             if (this._nodeExpression(input, variable)) {
-                                connections.push({ id: variable.value });
+                                list.push({ id: variable.value });
                             }
-                            else if (this._connectionExpression(input, variable)) {
-                                connections.push({ id: variable.value });
+                            else if (this._argumentExpression(input, variable)) {
+                                list.push({ id: variable.value });
                             }
-                            else if (input.type == 'identifier') {
-                                connections.push({ id: input.value });
+                            else if (input.type == 'id') {
+                                list.push({ id: input.value });
                             }
                             else {
-                                connections = null;
+                                list = null;
                                 break;
                             }
                         }
-                        if (connections) {
-                            node.inputs.push(connections);
+                        if (list) {
+                            inputs.push(list);
                             args.shift();
                             continue;
                         }
                     }
-                    if (argument.type == 'list') {
+                    if (argumentExpression.type == 'list') {
                         break;
                     }
-                    if (argument.type == 'number' || argument.type == 'string' || argument.type == 'boolean') {
+                    if (argumentExpression.type === 'number' || argumentExpression.type == 'string' || argumentExpression.type == 'boolean') {
                         break;
                     }
-                    if (argument.type == '=') {
+                    if (argumentExpression.type === '=') {
                         break;
                     }
-                    variable = this._variable();
-                    if (this._nodeExpression(argument, variable)) {
-                        node.inputs.push([ { id: variable.value } ]);
+                    if (this._isCall(argumentExpression, 'torch.list_with_default', [ {}, {} ])) {
+                        break;
+                    }
+                    if (this._isCall(argumentExpression, 'torch.device', [ { type: 'string' } ])) {
+                        break;
+                    }
+                    if (this._isCall(argumentExpression, 'int', [ {} ]) ||
+                        this._isCall(argumentExpression, 'float', [ {} ])) {
+                        break;
+                    }
+                    const variable = this._variable();
+                    if (this._nodeExpression(argumentExpression, variable)) {
+                        inputs.push([ { id: variable.value } ]);
                         args.shift();
                         continue;
                     }
-                    if (this._connectionExpression(argument, variable)) {
-                        node.inputs.push([ { id: variable.value } ]);
+                    if (this._argumentExpression(argumentExpression, variable)) {
+                        inputs.push([ { id: variable.value } ]);
                         args.shift();
                         continue;
                     }
-                    if (argument.type == '.' &&
-                        argument.target.type == 'identifier' &&
-                        argument.target.value == 'CONSTANTS' &&
-                        argument.member.type == 'identifier' &&
-                        argument.member.value.startsWith('c')) {
-                        var constantId = [ argument.target.value, argument.member.value ].join('.');
-                        var constantIndex = parseInt(argument.member.value.substring(1), 10);
-                        var constantTensor = this._container.tensors[constantIndex];
-                        node.inputs.push([ { id: constantId, initializer: constantTensor } ]);
+                    if (argumentExpression.type == '.' &&
+                        argumentExpression.target.type == 'id' &&
+                        argumentExpression.target.value == 'CONSTANTS' &&
+                        argumentExpression.member.type == 'id' &&
+                        argumentExpression.member.value.startsWith('c')) {
+                        const constantId = [ argumentExpression.target.value, argumentExpression.member.value ].join('.');
+                        const constantIndex = parseInt(argumentExpression.member.value.substring(1), 10);
+                        const constants = this._container.constants;
+                        if (!constants || constantIndex >= constants.length) {
+                            throw new torchscript.Error("Invalid constant '" + constantId + "'.");
+                        }
+                        const constantTensor = new torchscript.Tensor(this._container.constants[constantIndex]);
+                        inputs.push([ { id: constantId, initializer: constantTensor } ]);
                         args.shift();
                         continue;
+                    }
+                    if (argumentExpression.type == '.') {
+                        const value = this._evaluateExpression(argumentExpression);
+                        if (!torchscript.Utility.isTensor(value)) {
+                            break;
+                        }
                     }
                     throw new torchscript.Error('Unknown function argument.');
                 }
+                let attributes = [];
                 while (args.length > 0) {
-                    if (args[0].type == 'list') {
-                        for (var i = 0; i < args[0].value.length; i++) {
-                            args[0].value[i] = this._attributeExpression(args[0].value[i]);
+                    let attributeExpression = args[0]; 
+                    if (this._isCall(attributeExpression, 'int', [ {} ]) ||
+                        this._isCall(attributeExpression, 'float', [ {} ])) {
+                        const tensor = this._evaluateExpression(attributeExpression.arguments[0]);
+                        if (tensor && tensor.size && tensor.size.length === 1 && tensor.size[0] === 1 &&
+                            tensor.storage && tensor.storage.data) {
+                            const dataView = new DataView(tensor.storage.data.buffer, tensor.storage.byteOffset, tensor.storage.byteLength);
+                            switch (tensor.dataType) {
+                                case 'float32': {
+                                    attributes.push(dataView.getFloat32(0, true));
+                                    break;
+                                }
+                                case 'int32': {
+                                    attributes.push(dataView.getInt32(0, true));
+                                    break;
+                                }
+                            }
+                            args.shift();
+                            continue;
                         }
                     }
-                    var intExpression = this._attributeExpression(args[0]);
-                    if (intExpression) {
-                        args[0] = intExpression;
+                    let intExpression = this._attributeExpression(attributeExpression);
+                    if (intExpression.type == 'list' && intExpression.value.every((item) => item.type === 'number')) {
+                        intExpression = intExpression.value.map((item) => parseInt(item.value, 10)); 
                     }
-                    node.attributes.push(args[0]);
+                    if (intExpression) {
+                        attributeExpression = intExpression;
+                    }
+                    attributes.push(attributeExpression);
                     args.shift();
                 }
-                if (target.type == 'identifier') {
-                    node.outputs.push(target.value);
+                if (target.type == 'id') {
+                    outputs.push(target.value);
                 }
-                if (target.type == 'identifier_list') {
-                    for (var identifier of target.value) {
-                        node.outputs.push(identifier.value);
+                if (target.type == 'tuple') {
+                    for (let identifier of target.value) {
+                        outputs.push(identifier.value);
                     }
                 }
-                this._nodes.push(node);
+                this._nodes.push({
+                    name: name.split('.').pop(),
+                    attributes: attributes,
+                    inputs: inputs,
+                    outputs: outputs
+                });
                 return true;
             }
         }
@@ -1035,7 +1911,26 @@ torchscript.GraphContext = class {
 
     _nodeStatement(statement) {
         if (statement.type == '=') {
-            if (this._nodeExpression(statement.expression, statement.target)) {
+            const target = statement.target;
+            const expression = statement.expression;
+            if (target.type == 'id') {
+                if (this._nodeExpression(expression, target)) {
+                    this._state[target.value] = { __type__: 'torch.?Tensor' };
+                    return true;
+                }
+            }
+            if (target.type == 'tuple' && target.value.every((e) => e.type == 'id')) {
+                if (this._nodeExpression(expression, target)) {
+                    for (let item of target.value) {
+                        this._state[item.value] = { __type__: 'torch.?Tensor' };
+                    }
+                    return true;
+                }
+            }
+            if (target.type == 'id' &&
+                expression.type == 'id' &&
+                this._state[expression.value]) {
+                this._state[target.value] = expression;
                 return true;
             }
         }
@@ -1043,606 +1938,503 @@ torchscript.GraphContext = class {
     }
 
     _attributeExpression(expression) {
-        if (expression.type == 'identifier') {
-            if (this._numToTensorMap[expression.value]) {
-                return { type: 'number', value: this._numToTensorMap[expression.value] };
+        if (expression.type == 'id') {
+            if (this._state[expression.value]) {
+                return this._evaluateExpression(this._state[expression.value]);
             }
         }
-        if (expression.type == 'call' && 
-            expression.target.type == 'identifier' &&
-            expression.target.value == 'int' &&
-            expression.arguments.length == 1) 
-        {
-            var replace = this._attributeExpression(expression.arguments[0]);
-            if (replace) {
-                return replace;
-            }
-        }
-        return expression;
+        return this._evaluateExpression(expression);
     }
 
-    _attributeStatement(statement) {
-        if (statement.type == '=' &&
-            statement.target.type == 'identifier') { 
-            if (statement.expression.type == 'call' &&
-                this._name(statement.expression.target) == 'ops.prim.NumToTensor' && 
-                statement.expression.arguments.length == 1) {
-                var size = statement.expression.arguments[0];
-                if (size.type == 'call' &&
-                    size.arguments.length == 2 &&
-                    this._name(size.target) == 'torch.size' &&
-                    size.arguments[0].type == 'identifier' &&
-                    size.arguments[1].type == 'number') {
-                    this._numToTensorMap[statement.target.value] = this._name(size.target) + '(' + size.arguments.map((a) => a.value.toString()).join(',') + ')';
+    _assignStatement(statement) {
+        if (statement.type == '=') {
+            const target = statement.target;
+            const expression = statement.expression;
+            if (target.type == 'id') {
+                // _0 = ops.prim.NumToTensor(...)
+                if (this._isCall(expression, 'ops.prim.NumToTensor', [ {} ])) { 
+                    let sizeExpression = expression.arguments[0];
+                    if (this._isCall(sizeExpression, 'torch.size', [ { type: 'id' }, {} ])) { 
+                        this._state[target.value] = sizeExpression;
+                        return true;
+                    }
+                    if (sizeExpression.type == 'id') {
+                        let duplicate1 = this._state[sizeExpression.value];
+                        if (duplicate1) {
+                            this._state[target.value] = duplicate1;
+                            return true;
+                        }
+                    }
+                }
+
+                // _stride_3 = torch._unwrap_optional(_3)
+                // _stride_3 = ops.prim.unchecked_unwrap_optional(_127)
+                if (this._isCall(expression, 'torch._unwrap_optional', [ {} ]) ||
+                    this._isCall(expression, 'ops.prim.unchecked_unwrap_optional', [ {} ])) {
+                    let argument = expression.arguments[0];
+                    if (argument && 
+                        argument.type == 'id' && 
+                        this._state[argument.value] &&
+                        !torchscript.Utility.isTensor(this._state[argument.value])) {
+                        argument = this._state[argument.value];
+                    }
+                    this._state[target.value] = argument;
                     return true;
                 }
-                if (size.type == 'identifier') {
-                    var duplicate1 = this._numToTensorMap[size.value];
-                    if (duplicate1) {
-                        this._numToTensorMap[statement.target.value] = duplicate1;
+                // stride = unchecked_cast(List[int], _134)
+                if (this._isCall(expression, 'unchecked_cast', [ {}, { type: 'id' } ])) {
+                    this._state[target.value] = expression.arguments[1];
+                    return true;
+                }
+                // stride = annotate(List[int], [])
+                if (this._isCall(expression, 'annotate', [ {}, {} ])) {
+                    this._state[target.value] = expression.arguments[1];
+                    return true;
+                }
+                // _0 = torch.size(... , ...)
+                if (this._isCall(expression, 'torch.size', [ { type: 'id' }, { type: 'number' } ])) {
+                    this._state[target.value] = expression;
+                    return true;
+                }
+                // _0 = torch.len(...)
+                if (this._isCall(expression, 'torch.len', [ {} ])) {
+                    this._state[target.value] = expression;
+                    return true;
+                }
+                // _output_size = torch.list_with_default([7, 7], torch.size(x0))
+                if (this._isCall(expression, 'torch.list_with_default', [ {}, {} ])) {
+                    this._state[target.value] = expression;
+                    return true;
+                }
+                // _0 = int(...)
+                if (this._isCall(expression, 'int', [ { type: 'id' }] )) {
+                    let duplicate2 = this._state[statement.expression.arguments[0].value];
+                    if (duplicate2) {
+                        this._state[target.value] = duplicate2;
+                        return true;
+                    }
+                }
+                // _14 = _15
+                if (expression.type === 'id' && this._isBooleanLiteral(this._state[expression.value])) {
+                    this._state[target.value] = this._state[expression.value];
+                    return true;
+                }
+                // exponential_average_factor = 0.10000000000000001
+                if (expression.type === 'number') {
+                    this._state[target.value] = expression;
+                    return true;
+                }
+                // _8 = (empty, empty)
+                if (expression.type === 'tuple') {
+                    this._state[target.value] = expression;
+                    return true;
+                }
+                const valueExpression = this._evaluateExpression(expression);
+                if (valueExpression.type === 'number' || 
+                    this._isBooleanLiteral(valueExpression) ||
+                    valueExpression.type === 'tuple' ||
+                    (valueExpression.type === 'list' && valueExpression.value.every((item) => item.type == 'number'))) {
+                    this._state[target.value] = valueExpression;
+                    return true;
+                }
+                if (expression.type === 'id') {
+                    // _aux = None
+                    if (expression.value === 'None') {
+                        this._state[target.value] = expression;
+                        return true;
+                    }
+                }
+                // _0 = <boolean expression>
+                const booleanExpression = this._evaluateBooleanExpression(expression);
+                if (booleanExpression) {
+                    this._state[target.value] = booleanExpression;
+                    return true;
+                }
+                // _0 = self.features
+                const moduleName = target.value;
+                const module = this._getModule(expression);
+                if (module) {
+                    this._moduleMap.set(moduleName, module);
+                    return true;
+                }
+                // _14190 = __torch__.torchvision.models.inception.InceptionOutputs(x219, aux)
+                if (expression.type == 'call') {
+                    const className = torchscript.Utility.target(expression.target);
+                    const tuple = this._container.type(className);
+                    if (tuple && tuple.base && tuple.base.length > 0 &&
+                        tuple.base[0].type === 'id' && tuple.base[0].value === 'NamedTuple') {
+                        this._state[target.value] = { type: 'tuple', value: expression.arguments };
                         return true;
                     }
                 }
             }
-            if (statement.expression.type == 'call' &&
-                statement.expression.arguments.length == 2 &&
-                this._name(statement.expression.target) == 'torch.size' &&
-                statement.expression.arguments[0].type == 'identifier' &&
-                statement.expression.arguments[1].type == 'number') {
-                this._numToTensorMap[statement.target.value] = this._name(statement.expression.target) + '(' + statement.expression.arguments.map((a) => a.value.toString()).join(',') + ')';
-                return true;
-            }
-            if (statement.expression.type == 'call' &&
-                statement.expression.target.type == 'identifier' &&
-                statement.expression.target.value == 'int' &&
-                statement.expression.arguments.length == 1 &&
-                statement.expression.arguments[0].type == 'identifier') {
-                var duplicate2 = this._numToTensorMap[statement.expression.arguments[0].value];
-                if (duplicate2) {
-                    this._numToTensorMap[statement.target.value] = duplicate2;
-                    return true;
+            if (target.type === 'tuple' && 
+                target.value.every((item) => item.type === 'id')) {
+                // _30, _31, = _24
+                if (expression.type === 'id' && this._state[expression.value]) {
+                    const valueExpression = this._state[expression.value];
+                    if ((valueExpression.type === 'list' || valueExpression.type === 'tuple')  &&
+                        target.value.length === valueExpression.value.length) {
+                        for (let i = 0; i < target.value.length; i++) {
+                            this._state[target.value[i].value] = valueExpression.value[i];
+                        }
+                        return true;
+                    }
                 }
             }
         }
         return false;
     }
 
-    _module(expression) {
-        var module;
-        var submodule;
-        if (expression.type === '.') {
-            module = this._module(expression.target);
-            if (module && module.submodules) {
-                for (submodule of module.submodules) {
-                    if (submodule.name === expression.member.value) {
-                        return submodule;
-                    }
+    _getParameter(expression) {
+        expression = this._moduleTensor(expression);
+        if (expression.type === '.' && expression.member.type == 'id') {
+            let targetModule = this._getModule(expression.target);
+            if (targetModule) {
+                let obj = targetModule[expression.member.value];
+                if (torchscript.Utility.isTensor(obj)) {
+                    obj.__module__ = targetModule;
+                    return obj;
                 }
-            }
-        }
-        if (expression.type == 'call' && 
-            expression.target.type == 'identifier' && expression.target.value == 'getattr' && expression.arguments.length == 2) {
-            module = this._module(expression.arguments[0]);
-            if (!module) {
-                return null;
-            }
-            var name = null;
-            if (expression.arguments[1].type == 'string') {
-                name = expression.arguments[1].value.substring(1, expression.arguments[1].value.length - 1);
-            }
-            if (module) {
-                for (submodule of module.submodules) {
-                    if (submodule.name === name) {
-                        return submodule;
-                    }
-                }
-            }
-        }
-        if (expression.type == 'identifier') {
-            if (expression.value == 'self') {
-                return this._mainModule;
-            }
-            module = this._moduleMap[expression.value];
-            if (module) {
-                return module;
             }
         }
         return null;
     }
 
-    _moduleStatement(statement) {
-        if (statement.type == '=' && 
-            statement.target.type === 'identifier') {
-            var moduleName = statement.target.value;
-            var module = this._module(statement.expression);
+    _getSubmodule(module, name) {
+        const obj = module[name];
+        if (obj && !Array.isArray(obj) && (!obj.__type__ || !obj.__type__.endsWith('Tensor'))) {
+            return obj;
+        }
+        return null;
+    }
+
+    _getModule(expression) {
+        if (expression.type === '.') {
+            let module = this._getModule(expression.target);
             if (module) {
-                this._moduleMap[moduleName] = module;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    _connectionExpression(expression, target) {
-        expression = this._moduleTensor(expression);
-        if (expression.type === '.' && expression.member.type == 'identifier') {
-            var targetModule = this._module(expression.target);
-            if (targetModule && targetModule.parameters) {
-                for (var parameter of targetModule.parameters) {
-                    parameter.module = targetModule;
-                    if (parameter.name === expression.member.value) {
-                        parameter.outputs = parameter.outputs || [];
-                        parameter.outputs.push(target.value);
-                        return true;
-                    }
+                let submodule = this._getSubmodule(module, expression.member.value);
+                if (submodule) {
+                    return submodule;
                 }
-                targetModule.unresolvedParameters = targetModule.unresolvedParameters || [];
-                for (var unresolvedParameter of targetModule.unresolvedParameters) {
-                    unresolvedParameter.module = targetModule;
-                    if (unresolvedParameter.name === expression.member.value) {
-                        unresolvedParameter.outputs = unresolvedParameter.outputs || [];
-                        unresolvedParameter.outputs.push(target.value);
-                        return true;
-                    }
-                }
-                targetModule.unresolvedParameters.push({
-                    module: targetModule,
-                    name: expression.member.value,
-                    outputs: [ target.value ]
-                });
-                return true;
             }
         }
-        return false;
-    }
-
-    _connectionStatement(statement) {
-        if (statement.type === '=' && statement.target.type === 'identifier') {
-            if (this._connectionExpression(statement.expression, statement.target)) {
-                return true;
-            }
-            if (statement.target.type == 'identifier' &&
-                statement.expression.type == 'list') {
-                this._connectionMap[statement.target.value] = statement.expression;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    _variable() {
-        return { type: 'identifier', value: '_gen' + Math.random().toString(36).substring(7) };
-    }
-
-    _name(expression) {
-        if (expression.type == 'identifier') {
-            return expression.value;
-        }
-        if (expression.type == '.') {
-            return [ this._name(expression.target), this._name(expression.member) ].join('.');
-        }
-        throw new torchscript.Error("Failed to resolve name '" + JSON.stringify(expression) + "'.");
-    }
-
-    _moduleTensor(expression) {
         if (expression.type == 'call' && 
-            expression.arguments.length == 1 &&
-            this._name(expression.target) == 'torch.t') {
-            return expression.arguments[0];
-        }
-        return expression;
-    }
-}
-
-torchscript.PythonReader = class {
-
-    constructor(text) {
-        this._text = text;
-        this._position = 0;
-        this._lineEnd = -1;
-        this._lineStart = 0;
-        this._line = -1;
-        this._indentation = [];
-    }
-
-    whitespace() {
-        for (;;) {
-            while (this._position > this._lineEnd) {
-                this._lineStart = this._lineEnd + 1;
-                this._position = this._lineStart;
-                if (this._position >= this._text.length) {
-                    return false;
-                }
-                this._lineEnd = this._text.indexOf("\n", this._position);
-                if (this._lineEnd === -1) {
-                    this._lineEnd = this._text.length;
-                }
-                this._line++;
+            expression.target.type == 'id' && expression.target.value == 'getattr' && expression.arguments.length == 2) {
+            let module = this._getModule(expression.arguments[0]);
+            if (!module) {
+                return null;
             }
-            var c = this._text[this._position];
-            switch (c) {
-                case " ":
-                case "\r":
-                case "\t":
-                    this._position++;
-                    break;
-                case "#":
-                    this._position = this._lineEnd;
-                    break;
-                default:
-                    return true;
+            let name = null;
+            if (expression.arguments[1].type == 'string') {
+                name = expression.arguments[1].value.substring(1, expression.arguments[1].value.length - 1);
             }
-        }
-    }
-    
-    tokenize() {
-        if (!this.whitespace()) {
-            this._token = { type: 'eof', value: "" };
-            return this._token;
-        }
-        var c = this._text[this._position];
-        if (c == '\n') {
-            this._token = { type: 'newline', value: c };
-            return this._token;
-        }
-        if (c === '=' || c === '(' || c === ')' || c === ":" || c === "," || c === '[' || c === ']') {
-            this._token = { type: 'separator', value: c };
-            return this._token;
-        }
-        var position = this._position + 1;
-        if (c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c === "_") {
-            while (position < this._lineEnd) {
-                c = this._text[position];
-                if (c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "_" || c === "+" || c === "-") {
-                    position++;
-                    continue;
-                }
-                break;
-            }
-            var identifier = this._text.substring(this._position, position);
-            if (identifier == 'True' || identifier == 'False') {
-                this._token = { type: 'boolean', value: identifier };
-            }
-            else {
-                this._token = { type: 'identifier', value: identifier };
-            }
-            return this._token;
-        }
-        if (c === "-") {
-            if (position < this._lineEnd) {
-                if (this._text[position] === '>') {
-                    position++;
-                    this._token = { type: 'arrow', value: '->' };
-                    return this._token;
+            if (module) {
+                let submodule = this._getSubmodule(module, name);
+                if (submodule) {
+                    return submodule;
                 }
             }
         }
-        if (c >= "0" && c <= "9" || c === "-" || c === "+") {
-            while (position < this._lineEnd) {
-                c = this._text[position];
-                if (c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c >= "0" && c <= "9" || c === "_" || c === "+" || c === "-" || c === ".") {
-                    position++;
-                    continue;
-                }
-                break;
+        if (expression.type == 'id') {
+            if (expression.value == 'self') {
+                return this._data;
             }
-            this._token = { type: 'number', value: this._text.substring(this._position, position) };
-            return this._token;
-        }
-        if (c === "\"" || c === "'") {
-            var quote = c;
-            while (position < this._lineEnd) {
-                c = this._text[position];
-                if (c === "\\" && position < this._lineEnd) {
-                    position += 2;
-                    continue;
-                }
-                position++;
-                if (c === quote) {
-                    break;
-                }
+            const moduleName = expression.value;
+            if (this._moduleMap.has(moduleName)) {
+                return this._moduleMap.get(moduleName);
             }
-            this._token = { type: 'string', value: this._text.substring(this._position, position) };
-            return this._token;
         }
-        if (c === '.') {
-            this._token = { type: 'dot', value: c };
-            return this._token;
-        }
-        throw new torchscript.Error("Unexpected token '" + c + "'" + this.location());
+        return null;
     }
 
-    peek() {
-        if (!this._cache) {
-            this._token = this.tokenize();
-            this._cache = true;
-        }
-        return this._token;
-    }
-    
-    read() {
-        if (!this._cache) {
-            this._token = this.tokenize();
-        }
-        this._position += this._token.value.length;
-        this._cache = false;
-        return this._token;
-    }
-
-    match(value) {
-        if (this.peek().value === value) {
-            this.read();
+    _argumentExpression(expression, target) {
+        const parameter = this._getParameter(expression);
+        if (parameter) {
+            parameter.__outputs__ = parameter.__outputs__ || [];
+            parameter.__outputs__.push(target.value);
+            this._state[target.value] = parameter;
             return true;
         }
         return false;
     }
 
-    expect(value) {
-        var token = this.read();
-        if (token.value !== value) {
-            throw new torchscript.Error("Unexpected '" + token + "' instead of '" + value + "'" + this.location());
-        }
-    }
-
-    location() {
-        return " at " + (this._line + 1).toString() + ":" + (this._position - this._lineStart + 1).toString();
-    }
-
-    letter(c) {
-        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-    }
-
-    number(c) {
-        return c >= '0' && c <= '9';
-    }
-
-    identifier() {
-        var token = this.peek();
-        if (token.type == 'identifier') {
-            this.read();
-            return token;
-        }
-        return null;
-    }
-
-    literal() {
-        var token = this.peek();
-        if (token.type == 'string' || token.type == 'number' || token.type == 'boolean') {
-            this.read();
-            return token;
-        }
-        return null;
-    }
-
-    typeArguments() {
-        var list = [];
-        this.expect('[');
-        while (!this.match(']')) {
-            var type = this.type();
-            if (type == null) {
-                throw new torchscript.Error('Expected type ' + this.location());
+    _argumentStatement(statement) {
+        if (statement.type === '=' && 
+            statement.target.type === 'id') {
+            const target = statement.target;
+            const expression = statement.expression;
+            // _1 = self.conv1
+            if (this._argumentExpression(expression, target)) {
+                return true;
             }
-            list.push(type);
-            if (!this.match(',')) {
-                this.expect(']');
-                break;
+            if (expression.type == 'list') {
+                this._state[target.value] = expression;
+                return true;
             }
-        }
-        return list;
-    }
-
-    type() {
-        var identifier = this.identifier();
-        if (identifier) {
-            var type = { type: 'type', value: identifier.value };
-            if (this.peek().value === '[') {
-                type.arguments = this.typeArguments();
+            // _0 = "Implicit dimension choice for {} has been deprecated. Change the call to include dim=X as an argument."
+            if (expression.type == 'string') {
+                this._state[target.value] = expression;
+                return true;
             }
-            return type;
-        }
-        return null;
-    }
-
-    parameter() {
-        var identifier = this.identifier();
-        if (identifier != null) {
-            var parameterType = null
-            if (this.match(':')) {
-                parameterType = this.type();
+            // _5 = False
+            if (this._isBooleanLiteral(expression)) {
+                this._state[target.value] = expression;
+                return true;
             }
-            return { type: 'parameter', name: identifier.value, parameterType: parameterType };
-        }
-        return null;
-    }
-
-    parameters() {
-        var list = [];
-        this.expect('(');
-        while (!this.match(')')) {
-            this.match('\n');
-            list.push(this.parameter());
-            this.match('\n');
-            if (!this.match(',')) {
-                this.expect(')');
-                break;
+            // _3 = uninitialized(Tensor)
+            if (this._isCall(expression, 'uninitialized', [ {} ])) {
+                this._state[target.value] = expression;
+                return true;
             }
-        }
-        return list;
-    }
-
-    arguments() {
-        var list = [];
-        this.expect('(');
-        while (!this.match(')')) {
-            var expression = this.expression();
-            if (expression == null) {
-                throw new torchscript.Error('Expected expression ' + this.location());
-            }
-            list.push(expression);
-            if (!this.match(',')) {
-                this.expect(')');
-                break;
-            }
-        }
-        return list;
-    }
-
-    expression() {
-        var stack = [];
-        for (;;) {
-            var identifier = this.identifier();
-            if (identifier) {
-                stack.push(identifier);
-                continue;
-            }
-            var literal = this.literal();
-            if (literal) {
-                stack.push(literal);
-                continue;
-            }
-            if (this.match('.')) {
-                stack.push({
-                    type: '.',
-                    target: stack.pop(),
-                    member: this.identifier(),
-                });
-                continue;
-            }
-            if (this.peek().value === '(') {
-                if (stack.length == 0) {
-                    stack.push({ type: 'tuple', value: this.arguments() });
+            // output = (result)[0]
+            if (expression.type === '[]' &&
+                expression.target.type === 'id' &&
+                expression.arguments.value.length === 1 &&
+                expression.arguments.value[0].type === 'number') {
+                const arrayExpression = this._state[expression.target.value];
+                if (arrayExpression.type === 'tuple') {
+                    const index = Number(expression.arguments.value[0].value);
+                    this._state[target.value] = arrayExpression.value[index];
+                    return true;
                 }
-                else {
-                    stack.push({ type: 'call', target: stack.pop(), arguments: this.arguments() });
-                }
-                continue;
-            }
-            if (this.peek().value === '[') {
-                stack.push({ type: 'list', value: this.expressions() });
-                continue;
-            }
-            if (this.match('=')) {
-                stack.push({ type: '=', target: stack.pop(), expression: this.expression() });
-                continue;
-            }
-            break;
-        }
-
-        if (stack.length == 1) {
-            return stack.pop();
-        }
-        if (stack.length != 0) {
-            throw new torchscript.Error('Unexpected expression ' + this.location());
-        }
-        return null;
-    }
-
-    expressions() {
-        var list = [];
-        this.expect('[');
-        while (!this.match(']')) {
-            var expression = this.expression();
-            if (expression == null) {
-                throw new torchscript.Error('Expected expression ' + this.location());
-            }
-            list.push(expression);
-            if (!this.match(',')) {
-                this.expect(']');
-                break;
             }
         }
-        return list;
-    }
-
-    statement() {
-        var stack = [];
-        while (this.peek().type !== 'eof') {
-
-            if (this.match('def')) {
-                var node = { type: 'def' };
-                node.name = this.identifier().value;
-                node.parameters = this.parameters();
-                if (this.match('->')) {
-                    node.returnType = this.type();
-                }
-                this.expect(':');
-                this.expect('\n');
-                var position = this._position;
-                while (this.match('\n')) {
-                    position = this._position;
-                }
-                this.peek();
-                this._indentation.push(this._text.substring(position, this._position));
-                this._position = position;
-                node.body = this.statements();
-                this._indentation.pop();
-                stack.push(node);
-                break;
-            }
-
-            if (this.match('return')) {
-                stack.push({ type: 'return', expression: this.expression() });
-                break; 
-            }
-
-            var expression = this.expression();
-            if (expression) {
-                if (expression.type == 'identifier') {
-                    if (this.peek().value === ',') {
-                        var list = [ expression ];
-                        while (this.match(',')) {
-                            var identifier = this.identifier();
-                            if (!identifier) {
-                                if (this.peek().value != '=') {
-                                    throw new torchscript.Error('Expected identifier' + this.location());
-                                }
-                            }
-                            list.push(identifier);
+        // _4, _5 = False, _3
+        if (statement.type === '=' &&
+            statement.target.type === 'tuple' &&
+            statement.expression.type === 'tuple' &&
+            statement.target.value.length == statement.expression.value.length) {
+            for (let i = 0; i < statement.target.value.length; i++) {
+                const target = statement.target.value[i];
+                const expression = statement.expression.value[i];
+                if (target.type == 'id') {
+                    if (this._isBooleanLiteral(expression)) {
+                        this._state[target.value] = expression;
+                        continue;
+                    }
+                    if (expression.type === 'id') {
+                        const tensorExpression = this._state[expression.value];
+                        if (torchscript.Utility.isTensor(tensorExpression)) {
+                            this._state[target.value] = tensorExpression;
+                            continue;
                         }
-                        expression = { type: 'identifier_list', value: list };
-                        if (this.match('=')) {
-                            expression = { type: '=', target: expression, expression: this.expression() };
+                        if (tensorExpression.type === 'tuple' && tensorExpression.value.every((item) => item.type === 'id' && (item.value === 'zeros'|| item.value === 'empty'))) {
+                            this._state[target.value] = tensorExpression;
+                            continue;
                         }
                     }
                 }
-                if (expression.type == '=') {
-                    stack.push(expression);
-                    this.match('\n');
-                    break;
+                if (this._argumentExpression(expression, target)) {
+                    continue;
                 }
-                throw new torchscript.Error('Unhandled expression ' + this.location);
             }
-
-            if (this.match('\n')) {
-                break;
-            }
+            return true;
         }
-
-        if (stack.length == 1) {
-            return stack.pop();
-        }
-        if (stack.length != 0) {
-            throw new torchscript.Error('Unexpected statement ' + this.location());
-        }
-        return null;
+        return false;
     }
 
-    statements() {
-        var indentation = this._indentation.join('');
-        var stack = [];
-        while (this._position < this._text.length) {
-            if (this._text.substring(this._position, this._position + indentation.length) !== indentation) {
-                return stack;
-            }
-            this._position = this._position + indentation.length;
+    _variable() {
+        return { type: 'id', value: '_gen' + Math.random().toString(36).substring(7) };
+    }
 
-            var statement = this.statement();
-            if (statement) { 
-                stack.push(statement);
-                continue;
+    _moduleTensor(expression) {
+        if (this._isCall(expression, 'torch.t', [ {} ])) {
+            return expression.arguments[0];
+        }
+        return expression;
+    }
+
+    _isCall(expression, name, args) {
+        if (expression.type !== 'call') {
+            return false;
+        }
+        if (torchscript.Utility.target(expression.target) !== name) {
+            return false;
+        }
+        if (expression.arguments.length !== args.length) {
+            return false;
+        }
+        for (let i = 0; i < args.length; i++) {
+            const argument = args[i];
+            if (argument.type && argument.type !== expression.arguments[i].type) {
+                return false;
+            }
+            if (argument.value && argument.value !== expression.arguments[i].value) {
+                return false;
             }
         }
-        return stack;
+        return true;
+    }
+
+    _toBooleanLiteral(value) {
+        return { 'type': 'id', 'value': value ? 'True' : 'False' }; 
+    }
+
+    _isBooleanLiteral(expression) {
+        return expression && expression.type === 'id' && (expression.value === 'True' || expression.value === 'False');
+    }
+
+    _evaluateExpression(expression) {
+        // _150.drop_rate
+        if (expression.type === '.') {
+            const module = this._getModule(expression.target);
+            if (module &&
+                expression.member.type === 'id' &&
+                Object.prototype.hasOwnProperty.call(module, expression.member.value)) {
+                const value = module[expression.member.value];
+                if (typeof value === 'number') {
+                    return { type: 'number', value: value };
+                }
+                if (Array.isArray(value) && value.every((item) => typeof item === 'number')) {
+                    const array = value;
+                    return { type: 'list', value: array.map((item) => { return { type: 'number', value: item }; }) };
+                }
+                if (torchscript.Utility.isTensor(value)) {
+                    return value;
+                }
+            }
+        }
+        if (expression.type === 'list') {
+            const value = expression.value.map((item) => this._evaluateExpression(item));
+            return { type: 'list', value: value };
+        }
+        // int(x)
+        if (this._isCall(expression, 'int', [ {} ])) {
+            return this._evaluateExpression(expression.arguments[0]);
+        }
+        // float(x)
+        if (this._isCall(expression, 'float', [ {} ])) {
+            return this._evaluateExpression(expression.arguments[0]);
+        }
+        // annotate(Optional[int], None)
+        // annotate(List[int], [])
+        if (this._isCall(expression, 'annotate', [ {}, {} ])) {
+            return expression.arguments[1];
+        }
+        // _foo
+        if (expression.type == 'id' && this._state[expression.value]) {
+            return this._state[expression.value];
+        }
+        return expression;
+    }
+
+    _evaluateBooleanExpression(expression) {
+        // torch.eq("zeros", "circular"):
+        if (this._isCall(expression, 'torch.eq', [ {}, {} ])) {
+            const left = this._evaluateExpression(expression.arguments[0]);
+            const right = this._evaluateExpression(expression.arguments[1]);
+            if (left.type === 'number' && right.type === 'number') {
+                return this._toBooleanLiteral(Number(left.value) === Number(right.value));
+            }
+            if (left.type === 'string' && right.type === 'string') {
+                return this._toBooleanLiteral(left.value === right.value);
+            }
+        }
+        // torch.eq(torch.dim(x4), 2):
+        if (this._isCall(expression, 'torch.eq', [ {}, { type: 'number' } ]) &&
+            this._isCall(expression.arguments[0], 'torch.dim', [ { type: 'id' } ])) {
+            return this._toBooleanLiteral(true); // TODO
+        }
+        // torch.ne(torch.dim(x4), 4):
+        if (this._isCall(expression, 'torch.ne', [ {}, {} ])) {
+            const right = this._evaluateExpression(expression.arguments[1]);
+            const left = this._evaluateExpression(expression.arguments[0]);
+            if (right.type === 'number') {
+                if (this._isCall(expression.arguments[0], 'torch.dim', [ { type: 'id' } ]) ||
+                    this._isCall(expression.arguments[0], 'torch.len', [ {} ])) {
+                    return this._toBooleanLiteral(false); // TODO
+                }
+            }
+            if (left.type === 'number') {
+                if (this._isCall(expression.arguments[1], 'torch.size', [ {}, {} ])) {
+                    return this._toBooleanLiteral(false); // TODO
+                }
+            }
+            return this._toBooleanLiteral(false); // TODO
+        }
+        // torch.__is__(None, None)
+        if (this._isCall(expression, 'torch.__is__', [ { type: 'id', value: 'None' }, { type: 'id', value: 'None' } ])) {
+            return this._toBooleanLiteral(true);
+        }
+        // torch.__is__(<id>, None)
+        if (this._isCall(expression, 'torch.__is__', [ { type: 'id' }, { type: 'id', value: 'None' } ])) {
+            const argument = this._state[expression.arguments[0].value];
+            return this._toBooleanLiteral(!argument && argument.value == 'None');
+        }
+        // torch.__is__(annotate(Optional[int], None), None)
+        if (this._isCall(expression, 'torch.__is__', [ { type: 'call' }, { type: 'id', value: 'None' } ])) {
+            const left = this._evaluateExpression(expression.arguments[0]);
+            const right = this._evaluateExpression(expression.arguments[1]);
+            if (left.type === 'id' && left.value === 'None' && right.type === 'id' && right.value === 'None') {
+                return this._toBooleanLiteral(true);
+            }
+        }
+        // _torch.__is__(1, None)
+        if (this._isCall(expression, 'torch.__is__', [ { type: 'number' }, { type: 'id', value: 'None' } ])) {
+            return this._toBooleanLiteral(false);
+        }
+        // torch.__isnot__(<id>, None)
+        if (this._isCall(expression, 'torch.__isnot__', [ { type: 'id' }, { type: 'id', value: 'None' } ])) {
+            let argumentExpression = expression.arguments[0];
+            if (this._state[argumentExpression.value]) {
+                argumentExpression = this._state[argumentExpression.value];
+            }
+            if (argumentExpression) {
+                return this._toBooleanLiteral(argumentExpression.value !== 'None');
+            }
+        }
+        // torch.__isnot__(self.fc1.bias, None)
+        if (this._isCall(expression, 'torch.__isnot__', [ { type: '.' }, { type: 'id', value: 'None' } ])) {
+            const parameter = this._getParameter(expression.arguments[0]);
+            if (parameter) {
+                return this._toBooleanLiteral(true);
+            }
+        }
+        // torch.lt(0.5, 0.)
+        if (this._isCall(expression, 'torch.lt', [ { type: 'number' }, { type: 'number' } ])) {
+            return this._toBooleanLiteral(Number(expression.arguments[0].value) < Number(expression.arguments[1].value));
+        }
+        // torch.gt(0.5, 0.)
+        if (this._isCall(expression, 'torch.gt', [ {}, {} ])) {
+            const left = this._evaluateExpression(expression.arguments[0]);
+            const right = this._evaluateExpression(expression.arguments[1]);
+            if (left.type === 'number' && right.type === 'number') {
+                return this._toBooleanLiteral(Number(left.value) > Number(right.value));
+            }
+        }
+        // torch.__not__(...)
+        if (this._isCall(expression, 'torch.__not__', [ { type: 'id' } ])) {
+            let argumentExpression = expression.arguments[0];
+            if (!this._isBooleanLiteral(argumentExpression)) {
+                argumentExpression = this._state[argumentExpression.value];
+            }
+            if (this._isBooleanLiteral(argumentExpression)) {
+                switch (argumentExpression.value) {
+                    case 'True': return this._toBooleanLiteral(false);
+                    case 'False': return this._toBooleanLiteral(true);
+                }
+            }
+        }
+        // torch.is_scripting()
+        if (this._isCall(expression, 'torch.is_scripting', [])) {
+            return this._toBooleanLiteral(true);
+        }
+        // _2.training
+        if (expression.type === '.') {
+            const module = this._getModule(expression.target);
+            if (module &&
+                expression.member.type === 'id' &&
+                Object.prototype.hasOwnProperty.call(module, expression.member.value)) {
+                const value = module[expression.member.value];
+                if (Object(value) !== value) {
+                    if (value === true || value === false) {
+                        return this._toBooleanLiteral(value);
+                    } 
+                }
+            }
+        }
+        return null;
     }
 }
 
